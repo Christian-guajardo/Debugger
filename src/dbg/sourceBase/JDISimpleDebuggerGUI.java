@@ -1,11 +1,8 @@
 package dbg.sourceBase;
 
-public class JDISimpleDebugger {
+public class JDISimpleDebuggerGUI {
     public static void main(String[] args) throws Exception {
-
-        ScriptableDebugger debuggerInstance = new ScriptableDebugger();
+        ScriptableDebuggerGUI debuggerInstance = new ScriptableDebuggerGUI();
         debuggerInstance.attachTo(testTree.class);
-
     }
 }
-
