@@ -7,19 +7,23 @@ import com.sun.jdi.request.*;
 import commands.*;
 import models.*;
 import gui.DebuggerGUI;
+import timetravel.*;
 
 import javax.swing.*;
 import java.io.*;
 import java.util.*;
 
-public class ScriptableDebuggerGUI implements DebuggerGUI.DebuggerCallback {
+/**
+ * Debugger graphique basé sur les snapshots avec support des Time-Traveling Queries
+ * Version corrigée pour gérer la disconnection de la VM en mode replay
+ */
+public class ScriptableDebuggerGUI {
     private Class debugClass;
     private VirtualMachine vm;
     private DebuggerState state;
     private CommandInterpreter interpreter;
     private DebuggerGUI gui;
-    private boolean shouldContinue = false;
-    private volatile boolean isRunning = true;
+    private boolean isVmRunning = true;
 
     public ScriptableDebuggerGUI() {
         this.interpreter = new CommandInterpreter();
@@ -38,19 +42,35 @@ public class ScriptableDebuggerGUI implements DebuggerGUI.DebuggerCallback {
     public void attachTo(Class debuggeeClass) {
         this.debugClass = debuggeeClass;
 
-        // Créer l'interface graphique
+        // Créer l'interface graphique en premier
         SwingUtilities.invokeLater(() -> {
             gui = new DebuggerGUI();
-            gui.setCallback(this);
+            gui.setCallback(new DebuggerGUICallback());
             gui.setVisible(true);
-            gui.appendOutput("=== Graphical Debugger Started ===\n");
+            gui.appendOutput("=== Time-Traveling Debugger Started ===\n");
             gui.appendOutput("Starting target VM...\n");
+            gui.enableControls(false); // Désactivé pendant la capture
         });
 
         try {
             vm = connectAndLaunchVM();
             captureProcessOutput();
             state = new DebuggerState(vm);
+
+            // Configurer le callback de time-travel
+            state.getTimelineManager().setCallback(snapshot -> {
+                SwingUtilities.invokeLater(() -> {
+                    gui.appendOutput("\n=== Time-Travel to Snapshot #" +
+                            snapshot.getSnapshotId() + " ===\n");
+                    gui.appendOutput("Location: " + snapshot.getSourceFile() +
+                            ":" + snapshot.getLineNumber() + "\n");
+                    gui.appendOutput("Method: " + snapshot.getMethodName() + "\n");
+
+                    // Mettre à jour l'UI avec le snapshot (sans utiliser le thread)
+                    updateGUIFromSnapshot(snapshot);
+                });
+            });
+
             enableClassPrepareRequest(vm);
 
             SwingUtilities.invokeLater(() -> {
@@ -75,281 +95,234 @@ public class ScriptableDebuggerGUI implements DebuggerGUI.DebuggerCallback {
         r.enable();
     }
 
-    private void handleBreakpoint(BreakpointEvent event) throws IncompatibleThreadStateException, AbsentInformationException {
-        Location loc = event.location();
-
+    public void startDebugger() throws InterruptedException, AbsentInformationException {
+        // --- PHASE 1 : ENREGISTREMENT (automatique) ---
         SwingUtilities.invokeLater(() -> {
-            gui.appendOutput("\n=== Breakpoint hit ===\n");
-            try {
-                gui.appendOutput("Location: " + loc.sourceName() + ":" + loc.lineNumber() + "\n");
-                gui.appendOutput("Method: " + loc.method().name() + "\n");
-            } catch (AbsentInformationException e) {
-                gui.appendOutput("Location information not available\n");
-            }
+            gui.appendOutput("\n=== Phase 1: Recording Execution ===\n");
+            gui.appendOutput("Capturing all execution steps...\n");
         });
 
+        recordTrace();
 
-        String key = loc.sourceName() + ":" + loc.lineNumber();
-        Breakpoint bp = state.getBreakpoints().get(key);
+        // --- PHASE 2 : MODE REPLAY ---
+        SwingUtilities.invokeLater(() -> {
+            gui.appendOutput("\n=== Phase 2: Replay Mode ===\n");
+            gui.appendOutput("Program execution completed.\n");
+            gui.appendOutput("Total snapshots captured: " +
+                    state.getTimelineManager().getTimelineSize() + "\n");
+            gui.appendOutput("\nYou can now navigate through the execution.\n");
 
-        if (bp != null) {
-            bp.incrementHitCount();
+            // Activer les contrôles et passer en mode replay
+            gui.enableControls(true);
+        });
 
-            if (!bp.shouldStop()) {
-                SwingUtilities.invokeLater(() -> {
-                    gui.appendOutput("Breakpoint condition not met, continuing...\n");
-                });
-                return;
-            }
+        // Configurer la stratégie de replay
+        state.setExecutionStrategy(new ReplayExecutionStrategy());
 
-            if (bp.getType() == Breakpoint.BreakpointType.ONCE) {
-                bp.getRequest().disable();
-                state.getBreakpoints().remove(key);
-                SwingUtilities.invokeLater(() -> {
-                    gui.appendOutput("One-time breakpoint removed\n");
-                });
-            }
-        }
-
-
-        updateGUI(event.location(), event.thread());
-
-
-        waitForCommand();
-    }
-
-    private void handleMethodEntry(MethodEntryEvent event) throws IncompatibleThreadStateException {
-        Method method = event.method();
-
-        for (String methodName : state.getMethodBreakpoints().keySet()) {
-            if (method.name().equals(methodName)) {
-                SwingUtilities.invokeLater(() -> {
-                    gui.appendOutput("\n=== Method entry: " + method.name() + " ===\n");
-                    gui.appendOutput("Class: " + method.declaringType().name() + "\n");
-                });
-
-                updateGUI(event.location(), event.thread());
-                waitForCommand();
-                return;
-            }
+        // Se positionner au début de la timeline
+        if (state.getTimelineManager().getTimelineSize() > 0) {
+            state.getTimelineManager().travelToSnapshot(0);
         }
     }
 
-    private void setInitialBreakpoint() {
-        for (ReferenceType type : vm.allClasses()) {
-            if (type.name().equals(debugClass.getName())) {
-                try {
-                    String sourceFile = type.sourceName();
-                    List<Location> locations = type.locationsOfLine(14);
+    private void recordTrace() throws InterruptedException {
+        int snapshotCount = 0;
 
-                    if (!locations.isEmpty()) {
-                        Location loc = locations.get(0);
-                        BreakpointRequest req = vm.eventRequestManager()
-                                .createBreakpointRequest(loc);
-                        req.enable();
-
-                        SwingUtilities.invokeLater(() -> {
-                            gui.appendOutput("Initial breakpoint set at " + sourceFile + ":14\n");
-                        });
-                        return;
-                    }
-                } catch (AbsentInformationException e) {
-                    SwingUtilities.invokeLater(() -> {
-                        gui.appendOutput("Warning: No debug info available\n");
-                    });
-                }
-            }
-        }
-    }
-
-    public void startDebugger() throws InterruptedException, AbsentInformationException {
-        while (isRunning) {
+        while (isVmRunning) {
             EventSet eventSet = vm.eventQueue().remove();
 
             for (Event event : eventSet) {
-                try {
-                    if (event instanceof VMDisconnectEvent) {
-                        SwingUtilities.invokeLater(() -> {
-                            gui.appendOutput("\n=== Program terminated ===\n");
-                            gui.enableControls(false);
-                        });
-
-                        return;
-                    }
-
-                    if (event instanceof ClassPrepareEvent) {
-                        SwingUtilities.invokeLater(() -> {
-                            gui.appendOutput("Class loaded: " + debugClass.getName() + "\n");
-                        });
-                        setInitialBreakpoint();
-                    }
-
-                    if (event instanceof BreakpointEvent) {
-                        handleBreakpoint((BreakpointEvent) event);
-                        continue;
-                    }
-
-                    if (event instanceof StepEvent) {
-                        StepEvent se = (StepEvent) event;
-                        vm.eventRequestManager().deleteEventRequest(event.request());
-                        updateGUI(se.location(), se.thread());
-                        waitForCommand();
-                        continue;
-                    }
-
-                    if (event instanceof MethodEntryEvent) {
-                        handleMethodEntry((MethodEntryEvent) event);
-                        continue;
-                    }
-
-                } catch (Exception e) {
-                    System.err.println("Error handling event: " + e.getMessage());
-                    e.printStackTrace();
+                if (event instanceof VMDisconnectEvent) {
                     SwingUtilities.invokeLater(() -> {
-                        gui.appendOutput("ERROR: " + e.getMessage() + "\n");
+                        gui.appendOutput("VM Disconnected - Recording complete.\n");
                     });
+                    isVmRunning = false;
+                    break;
+                }
+
+                if (event instanceof ClassPrepareEvent) {
+                    ClassPrepareEvent evt = (ClassPrepareEvent) event;
+                    SwingUtilities.invokeLater(() -> {
+                        gui.appendOutput("Class loaded: " + evt.referenceType().name() + "\n");
+                    });
+                    createAutoStepRequest(evt.thread());
+                }
+
+                if (event instanceof StepEvent || event instanceof BreakpointEvent) {
+                    Location loc = ((LocatableEvent) event).location();
+                    ThreadReference thread = ((LocatableEvent) event).thread();
+
+                    ExecutionSnapshot snapshot = recordSnapshot(loc, thread);
+
+                    if (snapshot != null) {
+                        snapshotCount++;
+                        if (snapshotCount % 10 == 0) {
+                            int finalCount = snapshotCount;
+                            SwingUtilities.invokeLater(() -> {
+                                gui.appendOutput("Captured " + finalCount + " snapshots...\n");
+                            });
+                        }
+                    }
                 }
             }
 
-            vm.resume();
+            if (isVmRunning) {
+                vm.resume();
+            }
         }
     }
 
-    private void updateGUI(Location location, ThreadReference thread) {
+    private void createAutoStepRequest(ThreadReference thread) {
+        StepRequest stepRequest = vm.eventRequestManager().createStepRequest(
+                thread, StepRequest.STEP_LINE, StepRequest.STEP_INTO);
+
+        // Exclure les packages Java système
+        stepRequest.addClassExclusionFilter("java.*");
+        stepRequest.addClassExclusionFilter("javax.*");
+        stepRequest.addClassExclusionFilter("sun.*");
+        stepRequest.addClassExclusionFilter("jdk.*");
+
+        stepRequest.setSuspendPolicy(EventRequest.SUSPEND_ALL);
+        stepRequest.enable();
+    }
+
+    private ExecutionSnapshot recordSnapshot(Location location, ThreadReference thread) {
         try {
-            state.updateContext(thread);
-
-            SwingUtilities.invokeLater(() -> {
-                gui.updateDebuggerState(state, location, thread);
-                gui.enableControls(true);
-            });
-
+            return state.getTimelineManager().recordSnapshot(location, thread);
         } catch (Exception e) {
-            e.printStackTrace();
+            System.err.println("Error recording snapshot: " + e.getMessage());
+            return null;
         }
     }
 
-    private synchronized void waitForCommand() {
-        shouldContinue = false;
+    /**
+     * Mise à jour de l'UI à partir d'un snapshot (mode replay)
+     * N'utilise PAS le ThreadReference car la VM est déconnectée
+     */
+    private void updateGUIFromSnapshot(ExecutionSnapshot snapshot) {
+        if (snapshot == null) return;
 
-        while (!shouldContinue && isRunning) {
-            try {
-                wait(100);
-            } catch (InterruptedException e) {
-                break;
-            }
-        }
-    }
-
-    private synchronized void resumeExecution() {
-        shouldContinue = true;
-        notifyAll();
-    }
-
-    public void printProcessOutput() {
         try {
-            InputStreamReader reader = new InputStreamReader(vm.process().getInputStream());
-            StringBuilder output = new StringBuilder();
-            char[] buffer = new char[1024];
-            int read;
-
-            while ((read = reader.read(buffer)) != -1) {
-                output.append(buffer, 0, read);
-            }
-
-            String finalOutput = output.toString();
-            SwingUtilities.invokeLater(() -> {
-                gui.appendOutput(finalOutput);
-            });
-
-        } catch (IOException e) {
-            SwingUtilities.invokeLater(() -> {
-                gui.appendOutput("Error reading VM output: " + e.getMessage() + "\n");
-            });
-        }
-    }
-
-
-    @Override
-    public void executeCommand(Command command) {
-        try {
-            state.updateContext(state.getContext().getThread());
-            CommandResult result = command.execute(state);
-
-            if (!result.isSuccess()) {
-                SwingUtilities.invokeLater(() -> {
-                    gui.appendOutput("ERROR: " + result.getMessage() + "\n");
-                });
-                return;
-            }
-            resumeExecution();
+            // En mode replay, on reconstruit le contexte à partir du snapshot
+            // sans utiliser le thread JDI (qui n'est plus disponible)
+            gui.updateFromSnapshot(snapshot);
 
         } catch (Exception e) {
             SwingUtilities.invokeLater(() -> {
-                gui.appendOutput("Error executing command: " + e.getMessage() + "\n");
-            });
-        }
-
-    }
-
-    @Override
-    public void placeBreakpoint(String file, int line) {
-        try {
-            BreakCommand cmd = new BreakCommand(file, line);
-            CommandResult result = cmd.execute(state);
-
-            if (result.isSuccess()) {
-                SwingUtilities.invokeLater(() -> {
-                    gui.appendOutput("Breakpoint set at " + file + ":" + line + "\n");
-                });
-            } else {
-                SwingUtilities.invokeLater(() -> {
-                    gui.appendOutput("Failed to set breakpoint: " + result.getMessage() + "\n");
-                });
-            }
-
-        } catch (Exception e) {
-            SwingUtilities.invokeLater(() -> {
-                gui.appendOutput("Error setting breakpoint: " + e.getMessage() + "\n");
+                gui.appendOutput("Error updating GUI: " + e.getMessage() + "\n");
             });
         }
     }
+
     private void captureProcessOutput() {
         Process process = vm.process();
-
 
         new Thread(() -> {
             try (InputStreamReader isr = new InputStreamReader(process.getInputStream());
                  BufferedReader br = new BufferedReader(isr)) {
 
-                char[] buffer = new char[1024];
-                int read;
-
-                while ((read = br.read(buffer)) != -1) {
-                    String output = new String(buffer, 0, read);
+                String line;
+                while ((line = br.readLine()) != null) {
+                    String finalLine = line;
                     SwingUtilities.invokeLater(() -> {
-                        gui.appendOutput(output);
+                        gui.appendProgramOutput(finalLine + "\n");
                     });
                 }
             } catch (IOException e) {
-
+                // Stream fermé - normal à la fin
             }
         }).start();
 
+        // Capturer aussi stderr
+        new Thread(() -> {
+            try (InputStreamReader isr = new InputStreamReader(process.getErrorStream());
+                 BufferedReader br = new BufferedReader(isr)) {
+
+                String line;
+                while ((line = br.readLine()) != null) {
+                    String finalLine = line;
+                    SwingUtilities.invokeLater(() -> {
+                        gui.appendProgramOutput("[ERROR] " + finalLine + "\n");
+                    });
+                }
+            } catch (IOException e) {
+                // Stream fermé - normal
+            }
+        }).start();
     }
-    @Override
-    public void stop() {
-        isRunning = false;
-        resumeExecution();
 
-        if (vm != null) {
+    /**
+     * Classe interne pour gérer les callbacks de l'interface graphique
+     */
+    private class DebuggerGUICallback implements DebuggerGUI.DebuggerCallback {
+
+        @Override
+        public void executeCommand(Command command) {
             try {
-                vm.exit(0);
-            } catch (Exception e) {
+                CommandResult result = command.execute(state);
 
+                if (!result.isSuccess()) {
+                    SwingUtilities.invokeLater(() -> {
+                        gui.appendOutput("ERROR: " + result.getMessage() + "\n");
+                    });
+                    return;
+                }
+
+                // Mettre à jour l'UI après l'exécution de la commande
+                ExecutionSnapshot current = state.getTimelineManager().getCurrentSnapshot();
+                if (current != null) {
+                    SwingUtilities.invokeLater(() -> {
+                        updateGUIFromSnapshot(current);
+                    });
+                }
+
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    gui.appendOutput("Error executing command: " + e.getMessage() + "\n");
+                    e.printStackTrace();
+                });
             }
         }
+
+        @Override
+        public void placeBreakpoint(String file, int line) {
+            try {
+                // En mode replay, les breakpoints sont simulés
+                BreakCommand cmd = new BreakCommand(file, line);
+                CommandResult result = cmd.execute(state);
+
+                if (result.isSuccess()) {
+                    SwingUtilities.invokeLater(() -> {
+                        gui.appendOutput("Replay breakpoint set at " + file + ":" + line + "\n");
+                    });
+                } else {
+                    SwingUtilities.invokeLater(() -> {
+                        gui.appendOutput("Failed to set breakpoint: " + result.getMessage() + "\n");
+                    });
+                }
+
+            } catch (Exception e) {
+                SwingUtilities.invokeLater(() -> {
+                    gui.appendOutput("Error setting breakpoint: " + e.getMessage() + "\n");
+                });
+            }
+        }
+
+        @Override
+        public void stop() {
+            isVmRunning = false;
+
+            if (vm != null) {
+                try {
+                    vm.exit(0);
+                } catch (Exception e) {
+                    // VM déjà arrêtée
+                }
+            }
+
+            SwingUtilities.invokeLater(() -> {
+                gui.appendOutput("\n=== Debugger Stopped ===\n");
+            });
+        }
     }
-
-
 }
