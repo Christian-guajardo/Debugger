@@ -82,6 +82,7 @@ public class testTree {
     public static int processValue(int value) {
         value = value * 2;      // Modification
         value = value + 5;      // Modification
+        int counter = 1;
         return value;
     }
     public static void compute3(int n) {

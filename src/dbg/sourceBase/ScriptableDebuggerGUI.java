@@ -8,14 +8,10 @@ import commands.*;
 import models.*;
 import gui.DebuggerGUI;
 import timetravel.*;
-
 import javax.swing.*;
 import java.io.*;
 import java.util.*;
 
-/**
- * Version 3 : Capture la sortie du programme pour chaque snapshot
- */
 public class ScriptableDebuggerGUI {
     private Class debugClass;
     private VirtualMachine vm;
@@ -28,16 +24,17 @@ public class ScriptableDebuggerGUI {
         this.interpreter = new CommandInterpreter();
     }
 
+    // Lance la Machine Virtuelle (VM) et se connecte à la classe cible
     public VirtualMachine connectAndLaunchVM() throws IOException,
             IllegalConnectorArgumentsException, VMStartException {
-        LaunchingConnector launchingConnector = Bootstrap.virtualMachineManager()
-                .defaultConnector();
+        LaunchingConnector launchingConnector = Bootstrap.virtualMachineManager().defaultConnector();
         Map<String, Connector.Argument> arguments = launchingConnector.defaultArguments();
         arguments.get("main").setValue(debugClass.getName());
         arguments.get("options").setValue("-cp " + System.getProperty("java.class.path"));
         return launchingConnector.launch(arguments);
     }
 
+    // Point d'entrée : attache le débogueur à une classe et lance l'interface
     public void attachTo(Class debuggeeClass) {
         this.debugClass = debuggeeClass;
 
@@ -52,22 +49,19 @@ public class ScriptableDebuggerGUI {
 
         try {
             vm = connectAndLaunchVM();
-
-            // Capturer la sortie du programme ET l'ajouter au TimelineManager
             captureProcessOutput();
-
             state = new DebuggerState(vm);
 
-            // Configurer le callback de time-travel
+            SwingUtilities.invokeLater(() -> {
+                gui.setDebuggerState(state);
+            });
+
             state.getTimelineManager().setCallback(snapshot -> {
                 SwingUtilities.invokeLater(() -> {
                     gui.appendOutput("\n=== Time-Travel to Snapshot #" +
                             snapshot.getSnapshotId() + " ===\n");
                     gui.appendOutput("Location: " + snapshot.getSourceFile() +
                             ":" + snapshot.getLineNumber() + "\n");
-                    gui.appendOutput("Method: " + snapshot.getMethodName() + "\n");
-
-                    // Mettre à jour l'UI avec le snapshot
                     updateGUIFromSnapshot(snapshot);
                 });
             });
@@ -75,43 +69,40 @@ public class ScriptableDebuggerGUI {
             enableClassPrepareRequest(vm);
 
             SwingUtilities.invokeLater(() -> {
-                gui.appendOutput("Target VM started successfully\n");
+                gui.appendOutput("Target VM started\n");
                 gui.appendOutput("Class: " + debugClass.getName() + "\n");
             });
 
             startDebugger();
 
         } catch (Exception e) {
-            System.err.println("Error: " + e.getMessage());
-            e.printStackTrace();
             SwingUtilities.invokeLater(() -> {
                 gui.appendOutput("ERROR: " + e.getMessage() + "\n");
             });
         }
     }
 
+    // Configure la requête pour être notifié quand la classe cible est chargée
     public void enableClassPrepareRequest(VirtualMachine vm) {
         ClassPrepareRequest r = vm.eventRequestManager().createClassPrepareRequest();
         r.addClassFilter(debugClass.getName());
         r.enable();
     }
 
+    // Démarre le processus de débogage : enregistrement d'abord, puis mode lecture
     public void startDebugger() throws InterruptedException, AbsentInformationException {
         SwingUtilities.invokeLater(() -> {
-            gui.appendOutput("\n=== Phase 1: Recording Execution ===\n");
-            gui.appendOutput("Capturing all execution steps...\n");
+            gui.appendOutput("\n=== Phase 1: Recording ===\n");
         });
 
         recordTrace();
 
         SwingUtilities.invokeLater(() -> {
             gui.appendOutput("\n=== Phase 2: Replay Mode ===\n");
-            gui.appendOutput("Program execution completed.\n");
-            gui.appendOutput("Total snapshots captured: " +
+            gui.appendOutput("Snapshots captured: " +
                     state.getTimelineManager().getTimelineSize() + "\n");
 
-            // Afficher les statistiques de tracking
-            int varCount = state.getTimelineManager().getAllTrackedVariableNames().size();
+            int varCount = state.getTimelineManager().getTrackedVariablesWithModificationsCount();
             int modifCount = state.getTimelineManager().getAllVariablesWithHistory().values()
                     .stream().mapToInt(List::size).sum();
             int methodCallCount = state.getTimelineManager().getAllMethodCalls().size();
@@ -119,21 +110,20 @@ public class ScriptableDebuggerGUI {
             gui.appendOutput("\nStatistics:\n");
             gui.appendOutput("- Variables tracked: " + varCount + "\n");
             gui.appendOutput("- Variable modifications: " + modifCount + "\n");
-            gui.appendOutput("- Method calls recorded: " + methodCallCount + "\n");
-            gui.appendOutput("\nYou can now navigate through the execution.\n");
+            gui.appendOutput("- Method calls: " + methodCallCount + "\n");
+            gui.appendOutput("\nReady to navigate.\n");
 
             gui.enableControls(true);
         });
 
-        // Configurer la stratégie de replay
         state.setExecutionStrategy(new ReplayExecutionStrategy());
 
-        // Se positionner au début de la timeline
         if (state.getTimelineManager().getTimelineSize() > 0) {
             state.getTimelineManager().travelToSnapshot(0);
         }
     }
 
+    // Boucle principale d'enregistrement : capture les événements et crée des snapshots
     private void recordTrace() throws InterruptedException {
         int snapshotCount = 0;
 
@@ -143,7 +133,7 @@ public class ScriptableDebuggerGUI {
             for (Event event : eventSet) {
                 if (event instanceof VMDisconnectEvent) {
                     SwingUtilities.invokeLater(() -> {
-                        gui.appendOutput("VM Disconnected - Recording complete.\n");
+                        gui.appendOutput("VM Disconnected\n");
                     });
                     isVmRunning = false;
                     break;
@@ -168,7 +158,7 @@ public class ScriptableDebuggerGUI {
                         if (snapshotCount % 10 == 0) {
                             int finalCount = snapshotCount;
                             SwingUtilities.invokeLater(() -> {
-                                gui.appendOutput("Captured " + finalCount + " snapshots...\n");
+                                gui.appendOutput("Captured " + finalCount + " snapshots\n");
                             });
                         }
                     }
@@ -181,6 +171,7 @@ public class ScriptableDebuggerGUI {
         }
     }
 
+    // Configure le pas-à-pas automatique (Step Into) pour suivre toute l'exécution
     private void createAutoStepRequest(ThreadReference thread) {
         StepRequest stepRequest = vm.eventRequestManager().createStepRequest(
                 thread, StepRequest.STEP_LINE, StepRequest.STEP_INTO);
@@ -194,11 +185,11 @@ public class ScriptableDebuggerGUI {
         stepRequest.enable();
     }
 
+    // Enregistre un instantané de l'état actuel via le TimelineManager
     private ExecutionSnapshot recordSnapshot(Location location, ThreadReference thread) {
         try {
             return state.getTimelineManager().recordSnapshot(location, thread);
         } catch (Exception e) {
-            System.err.println("Error recording snapshot: " + e.getMessage());
             return null;
         }
     }
@@ -215,14 +206,10 @@ public class ScriptableDebuggerGUI {
         }
     }
 
-    /**
-     * Capture la sortie du programme et l'envoie à la fois vers l'UI
-     * ET vers le TimelineManager pour l'enregistrer dans les snapshots
-     */
+    // Capture la sortie standard et d'erreur du processus cible pour l'afficher
     private void captureProcessOutput() {
         Process process = vm.process();
 
-        // Thread pour stdout
         new Thread(() -> {
             try (InputStreamReader isr = new InputStreamReader(process.getInputStream());
                  BufferedReader br = new BufferedReader(isr)) {
@@ -230,21 +217,15 @@ public class ScriptableDebuggerGUI {
                 String line;
                 while ((line = br.readLine()) != null) {
                     String finalLine = line;
-
-                    // Envoyer à l'UI
                     SwingUtilities.invokeLater(() -> {
                         gui.appendProgramOutput(finalLine + "\n");
                     });
-
-                    // Enregistrer dans le TimelineManager
                     state.getTimelineManager().appendProgramOutput(finalLine + "\n");
                 }
             } catch (IOException e) {
-                // Stream fermé
             }
         }).start();
 
-        // Thread pour stderr
         new Thread(() -> {
             try (InputStreamReader isr = new InputStreamReader(process.getErrorStream());
                  BufferedReader br = new BufferedReader(isr)) {
@@ -252,15 +233,12 @@ public class ScriptableDebuggerGUI {
                 String line;
                 while ((line = br.readLine()) != null) {
                     String finalLine = line;
-
                     SwingUtilities.invokeLater(() -> {
                         gui.appendProgramOutput("[ERROR] " + finalLine + "\n");
                     });
-
                     state.getTimelineManager().appendProgramOutput("[ERROR] " + finalLine + "\n");
                 }
             } catch (IOException e) {
-                // Stream fermé
             }
         }).start();
     }
@@ -276,7 +254,7 @@ public class ScriptableDebuggerGUI {
                     SwingUtilities.invokeLater(() -> {
                         gui.appendOutput("ERROR: " + result.getMessage() + "\n");
                     });
-                    return null;
+                    return result;
                 }
 
                 ExecutionSnapshot current = state.getTimelineManager().getCurrentSnapshot();
@@ -289,12 +267,10 @@ public class ScriptableDebuggerGUI {
 
             } catch (Exception e) {
                 SwingUtilities.invokeLater(() -> {
-                    gui.appendOutput("Error executing command: " + e.getMessage() + "\n");
-                    e.printStackTrace();
+                    gui.appendOutput("Error: " + e.getMessage() + "\n");
                 });
+                return CommandResult.error(e.getMessage());
             }
-
-            return null;
         }
 
         @Override
@@ -305,17 +281,17 @@ public class ScriptableDebuggerGUI {
 
                 if (result.isSuccess()) {
                     SwingUtilities.invokeLater(() -> {
-                        gui.appendOutput("Replay breakpoint set at " + file + ":" + line + "\n");
+                        gui.appendOutput("Breakpoint set at " + file + ":" + line + "\n");
                     });
                 } else {
                     SwingUtilities.invokeLater(() -> {
-                        gui.appendOutput("Failed to set breakpoint: " + result.getMessage() + "\n");
+                        gui.appendOutput("Failed to set breakpoint\n");
                     });
                 }
 
             } catch (Exception e) {
                 SwingUtilities.invokeLater(() -> {
-                    gui.appendOutput("Error setting breakpoint: " + e.getMessage() + "\n");
+                    gui.appendOutput("Error setting breakpoint\n");
                 });
             }
         }
@@ -328,7 +304,6 @@ public class ScriptableDebuggerGUI {
                 try {
                     vm.exit(0);
                 } catch (Exception e) {
-                    // VM déjà arrêtée
                 }
             }
 

@@ -3,31 +3,18 @@ package timetravel;
 import com.sun.jdi.*;
 import java.util.*;
 
-/**
- * TimelineManager amélioré
- * - Track AUTOMATIQUEMENT toutes les variables trouvées
- * - Enregistre tous les appels de méthodes
- * - Capture la sortie du programme
- */
 public class TimelineManager {
     private List<ExecutionSnapshot> timeline;
     private int currentSnapshotIndex;
     private int nextSnapshotId;
-
-    // Tracking automatique de TOUTES les variables
     private Map<String, VariableTracker> allVariableTrackers;
-
-    // Enregistrement de tous les appels de méthodes
     private List<MethodCallRecord> allMethodCalls;
-
-    // Capture de la sortie du programme
     private StringBuilder programOutput;
-
     private TimeTravelCallback callback;
+    private String lastMethodSignature = null;
+    private int lastStackDepth = 0;
 
-    public void startTrackingVariable(String variableName, String currentValue) {
-        System.out.println("Starting tracking variable " + variableName);
-    }
+
 
     public interface TimeTravelCallback {
         void restoreSnapshot(ExecutionSnapshot snapshot);
@@ -42,200 +29,284 @@ public class TimelineManager {
         this.programOutput = new StringBuilder();
     }
 
-    /**
-     * Enregistre un snapshot avec tracking automatique
-     */
+    // Crée un snapshot complet de l'état actuel et l'ajoute à la chronologie
     public ExecutionSnapshot recordSnapshot(Location location, ThreadReference thread) {
         try {
-            // Créer le snapshot avec la sortie du programme actuelle
             ExecutionSnapshot snapshot = new ExecutionSnapshot(
-                    nextSnapshotId++,
-                    location,
-                    thread,
-                    programOutput.toString()
-            );
+                    nextSnapshotId++, location, thread, programOutput.toString());
 
             timeline.add(snapshot);
             currentSnapshotIndex = timeline.size() - 1;
-
-            // AUTOMATIQUE : Tracker toutes les variables trouvées
             autoTrackVariables(snapshot);
-
-            // AUTOMATIQUE : Enregistrer l'appel de méthode
-            recordMethodCall(snapshot);
-
+            recordMethodCallIfNew(snapshot);
             return snapshot;
-
         } catch (Exception e) {
-            System.err.println("Error recording snapshot: " + e.getMessage());
             return null;
         }
     }
 
-    /**
-     * Ajoute du texte à la sortie du programme
-     */
     public void appendProgramOutput(String text) {
         programOutput.append(text);
     }
 
-    /**
-     * Track automatiquement toutes les variables du snapshot
-     */
+    private String extractMethodContext(ExecutionSnapshot snapshot) {
+        if (snapshot.getCallStack() == null || snapshot.getCallStack().isEmpty()) {
+            return snapshot.getMethodName();
+        }
+        String fullFrame = snapshot.getCallStack().get(0);
+        int ligneIndex = fullFrame.indexOf(" ligne ");
+        if (ligneIndex > 0) {
+            return fullFrame.substring(0, ligneIndex).trim();
+        }
+        return fullFrame;
+    }
+
+    // Analyse les variables du snapshot pour détecter et enregistrer tout changement de valeur
     private void autoTrackVariables(ExecutionSnapshot snapshot) {
         Map<String, String> vars = snapshot.getVariables();
+        String methodContext = extractMethodContext(snapshot);
 
         for (Map.Entry<String, String> entry : vars.entrySet()) {
             String varName = entry.getKey();
             String varValue = entry.getValue();
+            String uniqueKey = varName + "@" + methodContext;
 
-            // Créer un tracker si c'est la première fois qu'on voit cette variable
-            if (!allVariableTrackers.containsKey(varName)) {
-                allVariableTrackers.put(varName, new VariableTracker(varName, varValue));
-                allVariableTrackers.get(varName).initializeVariable(snapshot);
+            if (!allVariableTrackers.containsKey(uniqueKey)) {
+                allVariableTrackers.put(uniqueKey, new VariableTracker(varName, varValue, methodContext));
+                allVariableTrackers.get(uniqueKey).initializeVariable(snapshot);
             }
-
-            // Vérifier si la variable a changé
-            allVariableTrackers.get(varName).checkForModification(varValue, snapshot);
+            allVariableTrackers.get(uniqueKey).checkForModification(varValue, snapshot);
         }
     }
 
-    /**
-     * Enregistre un appel de méthode
-     */
-    private void recordMethodCall(ExecutionSnapshot snapshot) {
-        MethodCallRecord call = new MethodCallRecord(
-                snapshot.getSnapshotId(),
-                snapshot.getMethodName(),
-                snapshot.getSourceFile(),
-                snapshot.getLineNumber()
-        );
-        allMethodCalls.add(call);
+    // Enregistre un nouvel appel de méthode
+    private void recordMethodCallIfNew(ExecutionSnapshot snapshot) {
+        if (snapshot.getCallStack() == null) return;
+        int currentStackDepth = snapshot.getCallStack().size();
+        String currentMethodSignature = extractMethodContext(snapshot);
+        if (lastMethodSignature == null || currentStackDepth > lastStackDepth) {
+            MethodCallRecord call = new MethodCallRecord(
+                    snapshot.getSnapshotId(),
+                    snapshot.getMethodName(), //
+                    snapshot.getSourceFile(),
+                    snapshot.getLineNumber(),
+                    currentMethodSignature
+            );
+            allMethodCalls.add(call);
+
+            lastMethodSignature = currentMethodSignature;
+        }
+        lastStackDepth = currentStackDepth;
     }
 
-    /**
-     * Récupère l'historique complet d'une variable
-     */
+    // Récupère l'historique des modifications d'une variable jusqu'au point actuel dans le temps
+    public List<VariableModification> getVariableHistoryUpToCurrent(String variableName) {
+        if (currentSnapshotIndex < 0) {
+            return new ArrayList<>();
+        }
+        ExecutionSnapshot currentSnapshot = timeline.get(currentSnapshotIndex);
+        return getVariableHistoryUpToSnapshot(variableName, currentSnapshot);
+    }
+
+    public List<VariableModification> getVariableHistoryUpToSnapshot(String variableName, ExecutionSnapshot upToSnapshot) {
+        String methodContext = extractMethodContext(upToSnapshot);
+        String uniqueKey = variableName + "@" + methodContext;
+        VariableTracker tracker = allVariableTrackers.get(uniqueKey);
+
+        if (tracker == null) {
+            return new ArrayList<>();
+        }
+
+        List<VariableModification> filteredMods = new ArrayList<>();
+        int maxSnapshotId = upToSnapshot.getSnapshotId();
+
+        for (VariableModification mod : tracker.getModifications()) {
+
+                filteredMods.add(mod);
+
+        }
+        return filteredMods;
+    }
+
     public List<VariableModification> getVariableHistory(String variableName) {
-        VariableTracker tracker = allVariableTrackers.get(variableName);
-        return tracker != null ? tracker.getModifications() : new ArrayList<>();
+        for (VariableTracker tracker : allVariableTrackers.values()) {
+            if (tracker.getVariableName().equals(variableName)) {
+                return tracker.getModifications();
+            }
+        }
+        return new ArrayList<>();
     }
 
-    /**
-     * Récupère tous les noms de variables trackées
-     */
     public Set<String> getAllTrackedVariableNames() {
-        return new HashSet<>(allVariableTrackers.keySet());
+        Set<String> names = new HashSet<>();
+        for (VariableTracker tracker : allVariableTrackers.values()) {
+            names.add(tracker.getVariableName());
+        }
+        return names;
     }
 
-    /**
-     * Récupère toutes les variables avec leurs modifications
-     */
+    public int getTrackedVariablesWithModificationsCount() {
+        int count = 0;
+        Set<String> counted = new HashSet<>();
+
+        for (VariableTracker tracker : allVariableTrackers.values()) {
+            if (!counted.contains(tracker.getVariableName())) {
+                if (!tracker.getModifications().isEmpty()) {
+                    count++;
+                    counted.add(tracker.getVariableName());
+                }
+            }
+        }
+        return count;
+    }
+
+    // Récupère l'historique complet de toutes les variables jusqu'à l'instant présent
+    public Map<String, List<VariableModification>> getAllVariablesWithHistoryUpToCurrent() {
+        if (currentSnapshotIndex < 0) {
+            return new HashMap<>();
+        }
+
+        ExecutionSnapshot currentSnapshot = timeline.get(currentSnapshotIndex);
+        Map<String, List<VariableModification>> result = new HashMap<>();
+        int maxSnapshotId = currentSnapshot.getSnapshotId();
+
+        for (Map.Entry<String, VariableTracker> entry : allVariableTrackers.entrySet()) {
+            String varName = entry.getValue().getVariableName();
+            List<VariableModification> filteredHistory = new ArrayList<>();
+
+            for (VariableModification mod : entry.getValue().getModifications()) {
+                if (mod.getSnapshotId() <= maxSnapshotId) {
+                    filteredHistory.add(mod);
+                }
+            }
+
+            if (!filteredHistory.isEmpty()) {
+                if (result.containsKey(varName)) {
+                    result.get(varName).addAll(filteredHistory);
+                } else {
+                    result.put(varName, filteredHistory);
+                }
+            }
+        }
+        return result;
+    }
+
     public Map<String, List<VariableModification>> getAllVariablesWithHistory() {
         Map<String, List<VariableModification>> result = new HashMap<>();
 
         for (Map.Entry<String, VariableTracker> entry : allVariableTrackers.entrySet()) {
-            String varName = entry.getKey();
+            String varName = entry.getValue().getVariableName();
             List<VariableModification> history = entry.getValue().getModifications();
 
-            // N'inclure que les variables qui ont été modifiées
             if (!history.isEmpty()) {
-                result.put(varName, history);
+                if (result.containsKey(varName)) {
+                    result.get(varName).addAll(history);
+                } else {
+                    result.put(varName, new ArrayList<>(history));
+                }
             }
         }
-
         return result;
     }
 
-    /**
-     * Récupère tous les appels de méthodes
-     */
+    public List<MethodCallRecord> getAllMethodCallsUpToCurrent() {
+        if (currentSnapshotIndex < 0) {
+            return new ArrayList<>();
+        }
+
+        int maxSnapshotId = timeline.get(currentSnapshotIndex).getSnapshotId();
+        List<MethodCallRecord> filtered = new ArrayList<>();
+
+        for (MethodCallRecord call : allMethodCalls) {
+
+                filtered.add(call);
+            
+        }
+        return filtered;
+    }
+
     public List<MethodCallRecord> getAllMethodCalls() {
         return new ArrayList<>(allMethodCalls);
     }
 
-    /**
-     * Récupère les appels à une méthode spécifique
-     */
+    public List<MethodCallRecord> getCallsToMethodUpToCurrent(String methodName) {
+        List<MethodCallRecord> result = new ArrayList<>();
+        for (MethodCallRecord call : getAllMethodCallsUpToCurrent()) {
+            if (call.getMethodName().equals(methodName)) {
+                result.add(call);
+            }
+        }
+        return result;
+    }
+
     public List<MethodCallRecord> getCallsToMethod(String methodName) {
         List<MethodCallRecord> result = new ArrayList<>();
-
         for (MethodCallRecord call : allMethodCalls) {
             if (call.getMethodName().equals(methodName)) {
                 result.add(call);
             }
         }
-
         return result;
     }
 
-    /**
-     * Voyage dans le temps vers un snapshot
-     */
+    // Restaure un état passé correspondant à l'ID de snapshot donné
     public boolean travelToSnapshot(int snapshotId) {
         for (int i = 0; i < timeline.size(); i++) {
             if (timeline.get(i).getSnapshotId() == snapshotId) {
                 currentSnapshotIndex = i;
-                ExecutionSnapshot snapshot = timeline.get(i);
-
                 if (callback != null) {
-                    callback.restoreSnapshot(snapshot);
+                    callback.restoreSnapshot(timeline.get(i));
                 }
-
                 return true;
             }
         }
         return false;
     }
 
-    // Getters standards
-    public List<ExecutionSnapshot> getTimeline() { return new ArrayList<>(timeline); }
-    public int getCurrentSnapshotIndex() { return currentSnapshotIndex; }
+    public List<ExecutionSnapshot> getTimeline() {
+        return new ArrayList<>(timeline);
+    }
+
+    public int getCurrentSnapshotIndex() {
+        return currentSnapshotIndex;
+    }
+
     public ExecutionSnapshot getCurrentSnapshot() {
         return currentSnapshotIndex >= 0 ? timeline.get(currentSnapshotIndex) : null;
     }
-    public void setCallback(TimeTravelCallback callback) { this.callback = callback; }
-    public int getTimelineSize() { return timeline.size(); }
 
-    /**
-     * Classe interne pour tracker une variable
-     */
+    public void setCallback(TimeTravelCallback callback) {
+        this.callback = callback;
+    }
+
+    public int getTimelineSize() {
+        return timeline.size();
+    }
+
     private class VariableTracker {
         private final String variableName;
+        private final String methodContext;
         private String lastValue;
         private List<VariableModification> modifications;
 
-        public VariableTracker(String variableName, String initialValue) {
+        public VariableTracker(String variableName, String initialValue, String methodContext) {
             this.variableName = variableName;
+            this.methodContext = methodContext;
             this.lastValue = initialValue;
             this.modifications = new ArrayList<>();
         }
 
         public void initializeVariable(ExecutionSnapshot snapshot){
-            VariableModification mod = new VariableModification(
-                    variableName,
-                    "_",
-                    lastValue,
-                    snapshot.getSnapshotId(),
-                    snapshot.getLineNumber(),
-                    snapshot.getMethodName()
-            );
-
-            modifications.add(mod);
+            modifications.add(new VariableModification(
+                    variableName, "_", lastValue,
+                    snapshot.getSnapshotId(), snapshot.getLineNumber(), snapshot.getMethodName()));
         }
 
         public void checkForModification(String newValue, ExecutionSnapshot snapshot) {
             if (!newValue.equals(lastValue)) {
-                VariableModification mod = new VariableModification(
-                        variableName,
-                        lastValue,
-                        newValue,
-                        snapshot.getSnapshotId(),
-                        snapshot.getLineNumber(),
-                        snapshot.getMethodName()
-                );
-
-                modifications.add(mod);
+                modifications.add(new VariableModification(
+                        variableName, lastValue, newValue,
+                        snapshot.getSnapshotId(), snapshot.getLineNumber(), snapshot.getMethodName()));
                 lastValue = newValue;
             }
         }
@@ -243,32 +314,37 @@ public class TimelineManager {
         public List<VariableModification> getModifications() {
             return new ArrayList<>(modifications);
         }
+
+        public String getVariableName() {
+            return variableName;
+        }
     }
 
-    /**
-     * Classe pour enregistrer un appel de méthode
-     */
     public static class MethodCallRecord {
         private final int snapshotId;
         private final String methodName;
         private final String sourceFile;
         private final int lineNumber;
+        private final String fullSignature;
 
-        public MethodCallRecord(int snapshotId, String methodName, String sourceFile, int lineNumber) {
+        public MethodCallRecord(int snapshotId, String methodName, String sourceFile,
+                                int lineNumber, String fullSignature) {
             this.snapshotId = snapshotId;
             this.methodName = methodName;
             this.sourceFile = sourceFile;
             this.lineNumber = lineNumber;
+            this.fullSignature = fullSignature;
         }
 
         public int getSnapshotId() { return snapshotId; }
         public String getMethodName() { return methodName; }
         public String getSourceFile() { return sourceFile; }
         public int getLineNumber() { return lineNumber; }
+        public String getFullSignature() { return fullSignature; }
 
         @Override
         public String toString() {
-            return String.format("%s() at %s:%d", methodName, sourceFile, lineNumber);
+            return String.format("%s at %s:%d", fullSignature, sourceFile, lineNumber);
         }
     }
 }

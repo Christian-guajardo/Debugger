@@ -4,7 +4,6 @@ import commands.*;
 import models.*;
 import timetravel.*;
 import com.sun.jdi.*;
-
 import javax.swing.*;
 import javax.swing.border.*;
 import javax.swing.tree.*;
@@ -15,25 +14,16 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.List;
 
-/**
- * Interface graphique du debugger avec support complet des Time-Traveling Queries
- * Implémente toutes les fonctionnalités demandées dans tp-gui.pdf et tp-ttq.pdf
- */
 public class DebuggerGUI extends JFrame {
-    // ========== Composants principaux ==========
     private SourceCodePanel sourceCodePanel;
     private JList<String> callStackList;
     private JTree inspectorTree;
     private JTextArea outputArea;
-    private JTextArea programOutputArea;  // Séparé pour la sortie du programme
-
-    // ========== Boutons de contrôle ==========
+    private JTextArea programOutputArea;
     private JButton stepOverButton;
     private JButton stepIntoButton;
     private JButton continueButton;
     private JButton stopButton;
-
-    // ========== Panneaux Time-Traveling Queries ==========
     private JPanel ttqPanel;
     private DefaultListModel<String> variableHistoryModel;
     private JList<String> variableHistoryList;
@@ -41,35 +31,28 @@ public class DebuggerGUI extends JFrame {
     private JList<String> methodCallsList;
     private JLabel currentVariableLabel;
     private JLabel currentSearchLabel;
-
-    // ========== Modèles de données ==========
     private DefaultListModel<String> callStackModel;
     private DefaultMutableTreeNode inspectorRoot;
     private DefaultTreeModel inspectorTreeModel;
-
-    // ========== État du debugger ==========
     private DebuggerState state;
     private CommandInterpreter interpreter;
     private Map<Integer, String> sourceLines;
     private int currentLine = -1;
     private String currentSourceFile = "";
     private ThreadReference currentThread;
-
-    // ========== Callback ==========
     private DebuggerCallback callback;
-
-    // ========== Données TTQ ==========
     private String trackedVariable = null;
     private List<VariableModification> currentVariableHistory = new ArrayList<>();
     private List<MethodCallInfo> currentMethodCalls = new ArrayList<>();
+    private DefaultListModel<String> LastvariableHistoryModel= new DefaultListModel<>();
 
     public interface DebuggerCallback {
         CommandResult executeCommand(Command command);
-
         void placeBreakpoint(String file, int line);
         void stop();
     }
 
+    // Constructeur principal : initialise la fenêtre, la taille et les composants graphiques
     public DebuggerGUI() {
         super("Time-Traveling Debugger - Graphical Interface");
         sourceLines = new HashMap<>();
@@ -79,22 +62,14 @@ public class DebuggerGUI extends JFrame {
         setLocationRelativeTo(null);
     }
 
+    // Configure l'agencement global des panneaux (gauche, centre, droite)
     private void initComponents() {
         setLayout(new BorderLayout(5, 5));
-
-        // Panel principal avec 3 colonnes
         JPanel mainPanel = new JPanel(new BorderLayout(5, 5));
-
-        // Colonne gauche : Source code + contrôles
         JPanel leftPanel = createLeftPanel();
-
-        // Colonne centrale : Call stack + Inspector
         JPanel centerPanel = createCenterPanel();
-
-        // Colonne droite : Time-Traveling Queries + Output
         JPanel rightPanel = createRightPanel();
 
-        // Organisation horizontale
         JSplitPane leftCenterSplit = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
         leftCenterSplit.setLeftComponent(leftPanel);
         leftCenterSplit.setRightComponent(centerPanel);
@@ -108,45 +83,34 @@ public class DebuggerGUI extends JFrame {
         mainPanel.add(mainSplit, BorderLayout.CENTER);
         add(mainPanel, BorderLayout.CENTER);
 
-        // Barre de statut
         JLabel statusBar = new JLabel(" Ready - Replay Mode");
         statusBar.setBorder(new BevelBorder(BevelBorder.LOWERED));
         add(statusBar, BorderLayout.SOUTH);
     }
 
-    // ========== PANEL GAUCHE : Source Code + Contrôles ==========
+    // Crée le panneau de gauche contenant les boutons de contrôle et le code source
     private JPanel createLeftPanel() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
-
-        // Contrôles en haut
-        JPanel controlPanel = createControlPanel();
-        panel.add(controlPanel, BorderLayout.NORTH);
-
-        // Source code au centre
-        JPanel sourcePanel = createSourceCodePanel();
-        panel.add(sourcePanel, BorderLayout.CENTER);
-
+        panel.add(createControlPanel(), BorderLayout.NORTH);
+        panel.add(createSourceCodePanel(), BorderLayout.CENTER);
         return panel;
     }
 
+    // Crée la barre d'outils avec les boutons Step Into, Step Over, Continue, Stop
     private JPanel createControlPanel() {
         JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 5));
         panel.setBorder(new TitledBorder("Execution Control (Replay Mode)"));
 
         stepIntoButton = new JButton("Step Into");
-        stepIntoButton.setToolTipText("Move to next snapshot");
         stepIntoButton.addActionListener(e -> executeStepInto());
 
         stepOverButton = new JButton("Step Over");
-        stepOverButton.setToolTipText("Skip method calls at same level");
         stepOverButton.addActionListener(e -> executeStepOver());
 
         continueButton = new JButton("Continue");
-        continueButton.setToolTipText("Continue to next breakpoint");
         continueButton.addActionListener(e -> executeContinue());
 
         stopButton = new JButton("Stop");
-        stopButton.setToolTipText("Stop debugging");
         stopButton.addActionListener(e -> executeStop());
         stopButton.setBackground(new Color(220, 100, 100));
 
@@ -154,43 +118,34 @@ public class DebuggerGUI extends JFrame {
         panel.add(stepOverButton);
         panel.add(continueButton);
         panel.add(stopButton);
-
         return panel;
     }
 
+    // Initialise le composant d'affichage du code source et gère les clics pour les breakpoints
     private JPanel createSourceCodePanel() {
         JPanel panel = new JPanel(new BorderLayout());
-
         sourceCodePanel = new SourceCodePanel();
         sourceCodePanel.setBreakpointListener(lineNumber -> {
             if (callback != null && !currentSourceFile.isEmpty()) {
                 callback.placeBreakpoint(currentSourceFile, lineNumber);
             }
         });
-
         panel.add(sourceCodePanel, BorderLayout.CENTER);
-
         return panel;
     }
 
-    // ========== PANEL CENTRAL : Call Stack + Inspector ==========
+    // Crée le panneau central contenant la pile d'appels et l'inspecteur de variables
     private JPanel createCenterPanel() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
-
         JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
         splitPane.setDividerLocation(250);
-
-        JPanel callStackPanel = createCallStackPanel();
-        JPanel inspectorPanel = createInspectorPanel();
-
-        splitPane.setTopComponent(callStackPanel);
-        splitPane.setBottomComponent(inspectorPanel);
-
+        splitPane.setTopComponent(createCallStackPanel());
+        splitPane.setBottomComponent(createInspectorPanel());
         panel.add(splitPane, BorderLayout.CENTER);
-
         return panel;
     }
 
+    // Crée la liste affichant la Call Stack (pile d'exécution)
     private JPanel createCallStackPanel() {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(new TitledBorder("Call Stack"));
@@ -205,36 +160,31 @@ public class DebuggerGUI extends JFrame {
                 int selectedIndex = callStackList.getSelectedIndex();
                 if (selectedIndex >= 0 && state != null && state.getContext() != null) {
                     updateInspectorForFrame(selectedIndex);
-
                     try {
                         DebugFrame frame = state.getContext().getCallStack().getFrames().get(selectedIndex);
                         Location loc = frame.getLocation();
                         loadSourceCode(loc);
                         sourceCodePanel.setCurrentLine(loc.lineNumber());
                     } catch (Exception ex) {
-                        ex.printStackTrace();
                     }
                 }
             }
         });
 
-        // Menu contextuel pour rechercher les appels
         JPopupMenu callStackMenu = new JPopupMenu();
         JMenuItem findAllCallsItem = new JMenuItem("Find All Method Calls");
         findAllCallsItem.addActionListener(e -> findAllMethodCalls());
         JMenuItem findCallsToItem = new JMenuItem("Find Calls to This Method");
         findCallsToItem.addActionListener(e -> findCallsToSelectedMethod());
-
         callStackMenu.add(findAllCallsItem);
         callStackMenu.add(findCallsToItem);
         callStackList.setComponentPopupMenu(callStackMenu);
 
-        JScrollPane scrollPane = new JScrollPane(callStackList);
-        panel.add(scrollPane, BorderLayout.CENTER);
-
+        panel.add(new JScrollPane(callStackList), BorderLayout.CENTER);
         return panel;
     }
 
+    // Crée l'arbre (JTree) pour inspecter les variables locales et objets
     private JPanel createInspectorPanel() {
         JPanel panel = new JPanel(new BorderLayout());
         panel.setBorder(new TitledBorder("Inspector (Variables Tree)"));
@@ -243,95 +193,63 @@ public class DebuggerGUI extends JFrame {
         inspectorTreeModel = new DefaultTreeModel(inspectorRoot);
         inspectorTree = new JTree(inspectorTreeModel);
         inspectorTree.setFont(new Font("Monospaced", Font.PLAIN, 11));
-
-        // Menu contextuel pour suivre une variable
+        //
         JPopupMenu inspectorMenu = new JPopupMenu();
         JMenuItem followItem = new JMenuItem("Follow Variable");
         followItem.addActionListener(e -> followSelectedVariable());
         inspectorMenu.add(followItem);
         inspectorTree.setComponentPopupMenu(inspectorMenu);
 
-        JScrollPane scrollPane = new JScrollPane(inspectorTree);
-        panel.add(scrollPane, BorderLayout.CENTER);
-
+        panel.add(new JScrollPane(inspectorTree), BorderLayout.CENTER);
         return panel;
     }
 
-    // ========== PANEL DROIT : Time-Traveling Queries + Output ==========
+    // Crée le panneau de droite contenant les outils de Time Travel et les sorties console
     private JPanel createRightPanel() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
-
         JSplitPane splitPane = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
         splitPane.setDividerLocation(450);
-
-        // Panneau TTQ en haut
-        JPanel ttqPanel = createTimeTravelingQueriesPanel();
-
-        // Output en bas
-        JPanel outputPanel = createOutputPanel();
-
-        splitPane.setTopComponent(ttqPanel);
-        splitPane.setBottomComponent(outputPanel);
-
+        splitPane.setTopComponent(createTimeTravelingQueriesPanel());
+        splitPane.setBottomComponent(createOutputPanel());
         panel.add(splitPane, BorderLayout.CENTER);
-
         return panel;
     }
 
+    // Crée les onglets pour le suivi des variables et des appels de méthodes
     private JPanel createTimeTravelingQueriesPanel() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
         panel.setBorder(new TitledBorder("Time-Traveling Queries"));
-
-        // Onglets pour séparer Variable Tracking et Method Calls
         JTabbedPane tabbedPane = new JTabbedPane();
-
-        // Onglet 1 : Suivi de variables
-        JPanel variablePanel = createVariableTrackingPanel();
-        tabbedPane.addTab("Variable Tracking", variablePanel);
-
-        // Onglet 2 : Recherche d'appels de méthodes
-        JPanel methodPanel = createMethodCallsPanel();
-        tabbedPane.addTab("Method Calls", methodPanel);
-
+        tabbedPane.addTab("Variable Tracking", createVariableTrackingPanel());
+        tabbedPane.addTab("Method Calls", createMethodCallsPanel());
         panel.add(tabbedPane, BorderLayout.CENTER);
-
         return panel;
     }
 
+    // Crée l'interface pour suivre l'historique d'une variable spécifique
     private JPanel createVariableTrackingPanel() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
-
-        // En-tête avec info sur la variable suivie
         JPanel headerPanel = new JPanel(new BorderLayout());
+
         currentVariableLabel = new JLabel("No variable selected");
         currentVariableLabel.setFont(new Font("SansSerif", Font.BOLD, 12));
         currentVariableLabel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
         headerPanel.add(currentVariableLabel, BorderLayout.CENTER);
 
-        // Panel avec boutons
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
-
         JButton showAllButton = new JButton("Show All");
-        showAllButton.setToolTipText("Show all tracked variables");
         showAllButton.addActionListener(e -> showAllTrackedVariables());
-
         JButton clearButton = new JButton("Clear");
-        clearButton.setToolTipText("Clear display");
         clearButton.addActionListener(e -> clearVariableTracking());
-
         buttonPanel.add(showAllButton);
         buttonPanel.add(clearButton);
         headerPanel.add(buttonPanel, BorderLayout.EAST);
-
         panel.add(headerPanel, BorderLayout.NORTH);
 
-        // Liste des modifications
         variableHistoryModel = new DefaultListModel<>();
         variableHistoryList = new JList<>(variableHistoryModel);
         variableHistoryList.setFont(new Font("Monospaced", Font.PLAIN, 11));
         variableHistoryList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-
-        // Double-clic pour voyager dans le temps
         variableHistoryList.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
@@ -341,41 +259,32 @@ public class DebuggerGUI extends JFrame {
             }
         });
 
-        JScrollPane scrollPane = new JScrollPane(variableHistoryList);
-        panel.add(scrollPane, BorderLayout.CENTER);
-
-        // Instructions
+        panel.add(new JScrollPane(variableHistoryList), BorderLayout.CENTER);
         JLabel infoLabel = new JLabel("<html><i>Right-click on a variable in Inspector and select 'Follow Variable'</i></html>");
         infoLabel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
         panel.add(infoLabel, BorderLayout.SOUTH);
-
         return panel;
     }
 
+    // Crée l'interface pour rechercher et lister les appels de méthodes
     private JPanel createMethodCallsPanel() {
         JPanel panel = new JPanel(new BorderLayout(5, 5));
-
-        // En-tête avec info sur la recherche
         JPanel headerPanel = new JPanel(new BorderLayout());
+
         currentSearchLabel = new JLabel("No search performed");
         currentSearchLabel.setFont(new Font("SansSerif", Font.BOLD, 12));
         currentSearchLabel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
         headerPanel.add(currentSearchLabel, BorderLayout.CENTER);
 
         JButton clearButton = new JButton("Clear");
-        clearButton.setToolTipText("Clear search results");
         clearButton.addActionListener(e -> clearMethodCallsSearch());
         headerPanel.add(clearButton, BorderLayout.EAST);
-
         panel.add(headerPanel, BorderLayout.NORTH);
 
-        // Liste des appels trouvés
         methodCallsModel = new DefaultListModel<>();
         methodCallsList = new JList<>(methodCallsModel);
         methodCallsList.setFont(new Font("Monospaced", Font.PLAIN, 11));
         methodCallsList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
-
-        // Double-clic pour voyager dans le temps
         methodCallsList.addMouseListener(new MouseAdapter() {
             @Override
             public void mouseClicked(MouseEvent e) {
@@ -385,56 +294,42 @@ public class DebuggerGUI extends JFrame {
             }
         });
 
-        JScrollPane scrollPane = new JScrollPane(methodCallsList);
-        panel.add(scrollPane, BorderLayout.CENTER);
+        panel.add(new JScrollPane(methodCallsList), BorderLayout.CENTER);
 
-        // Boutons de recherche
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton findAllButton = new JButton("Find All Calls");
-        findAllButton.setToolTipText("Find all method calls in execution");
         findAllButton.addActionListener(e -> findAllMethodCalls());
-
         JButton findSpecificButton = new JButton("Find Calls To...");
-        findSpecificButton.setToolTipText("Find calls to a specific method");
         findSpecificButton.addActionListener(e -> findCallsToMethod());
-
         buttonPanel.add(findAllButton);
         buttonPanel.add(findSpecificButton);
-
         panel.add(buttonPanel, BorderLayout.SOUTH);
-
         return panel;
     }
 
+    // Crée la zone de texte pour la sortie du programme et les logs du débogueur
     private JPanel createOutputPanel() {
         JPanel panel = new JPanel(new BorderLayout());
-
-        // Onglets pour séparer sortie programme et messages debugger
         JTabbedPane outputTabs = new JTabbedPane();
 
-        // Onglet 1: Sortie du programme SEULEMENT
         programOutputArea = new JTextArea();
         programOutputArea.setEditable(false);
         programOutputArea.setFont(new Font("Monospaced", Font.PLAIN, 12));
         programOutputArea.setBackground(Color.WHITE);
-        JScrollPane programScroll = new JScrollPane(programOutputArea);
-        outputTabs.addTab("Program Output", programScroll);
+        outputTabs.addTab("Program Output", new JScrollPane(programOutputArea));
 
-        // Onglet 2: Messages du debugger
         outputArea = new JTextArea();
         outputArea.setEditable(false);
         outputArea.setFont(new Font("Monospaced", Font.PLAIN, 11));
         outputArea.setBackground(new Color(240, 240, 240));
-        JScrollPane debuggerScroll = new JScrollPane(outputArea);
-        outputTabs.addTab("Debugger Messages", debuggerScroll);
+        outputTabs.addTab("Debugger Messages", new JScrollPane(outputArea));
 
         panel.add(outputTabs, BorderLayout.CENTER);
         panel.setBorder(new TitledBorder("Output"));
-
         return panel;
     }
 
-    // ========== ACTIONS DES CONTRÔLES ==========
+    // Actions des boutons de contrôle
     private void executeStepInto() {
         if (callback != null) {
             callback.executeCommand(new StepCommand());
@@ -460,269 +355,211 @@ public class DebuggerGUI extends JFrame {
         System.exit(0);
     }
 
-    // ========== FONCTIONNALITÉS TIME-TRAVELING QUERIES ==========
-
-    /**
-     * Commence à suivre la variable sélectionnée dans l'inspector
-     */
+    // Récupère la variable sélectionnée dans l'arbre et commence à la suivre
     private void followSelectedVariable() {
         TreePath path = inspectorTree.getSelectionPath();
         if (path == null) return;
 
         DefaultMutableTreeNode node = (DefaultMutableTreeNode) path.getLastPathComponent();
-        String nodeText = node.toString();
-
-        // Extraire le nom de la variable
-        String varName = extractVariableName(nodeText);
+        String varName = extractVariableName(node.toString());
         if (varName == null || varName.isEmpty()) {
-            appendOutput("Cannot track this variable\n");
             return;
         }
 
         try {
-
-
-
-                trackedVariable = varName;
-                currentVariableLabel.setText("Tracking: " + varName);
-                appendOutput("Started tracking variable: " + varName + "\n");
-
-                // Afficher l'historique
-                updateVariableHistory();
-
-
-
+            trackedVariable = varName;
+            currentVariableLabel.setText("Tracking: " + varName);
+            updateVariableHistory();
         } catch (Exception e) {
-            appendOutput("Error tracking variable: " + e.getMessage() + "\n");
         }
     }
 
-    /**
-     * Met à jour l'affichage de l'historique de la variable suivie
-     */
+    // Met à jour la liste des modifications de la variable suivie
     private void updateVariableHistory() {
         variableHistoryModel.clear();
         currentVariableHistory.clear();
 
-        if (trackedVariable == null ) return;
+        if (trackedVariable == null) return;
 
         try {
+            List<VariableModification> history =
+                    state.getTimelineManager().getVariableHistoryUpToCurrent(trackedVariable);
+            currentVariableHistory = history;
 
+            for (int i = 0; i < history.size(); i++) {
+                VariableModification mod = history.get(i);
+                String display = String.format("[%d] %s → %s (line %d, %s)",
+                        i, mod.getOldValue(), mod.getNewValue(),
+                        mod.getLineNumber(), mod.getMethodName());
+                variableHistoryModel.addElement(display);
 
-            CommandResult result = null;
-            if (callback != null) {
-                result = callback.executeCommand(new ShowVariableHistoryCommand(trackedVariable));
-            }
-            if (result!=null&&result.isSuccess() && result.getData() instanceof List) {
-                @SuppressWarnings("unchecked")
-                List<VariableModification> history = (List<VariableModification>) result.getData();
-                currentVariableHistory = history;
-
-                for (int i = 0; i < history.size(); i++) {
-                    VariableModification mod = history.get(i);
-                    String display = String.format("[%d] %s → %s (line %d, %s)",
-                            i,
-                            mod.getOldValue(),
-                            mod.getNewValue(),
-                            mod.getLineNumber(),
-                            mod.getMethodName());
-                    variableHistoryModel.addElement(display);
-                }
-
-                if (history.isEmpty()) {
-                    variableHistoryModel.addElement("(No modifications detected)");
-                }
             }
 
+            if (history.isEmpty()) {
+                variableHistoryModel.addElement("(No modifications detected yet)");
+            }
         } catch (Exception e) {
-            appendOutput("Error retrieving variable history: " + e.getMessage() + "\n");
         }
     }
 
-    /**
-     * Voyage dans le temps vers la modification sélectionnée
-     */
+    // Navigue vers le snapshot correspondant à la modification sélectionnée
     private void timeTravelToSelectedModification() {
         int selectedIndex = variableHistoryList.getSelectedIndex();
         if (selectedIndex < 0 || selectedIndex >= currentVariableHistory.size()) return;
 
         VariableModification mod = currentVariableHistory.get(selectedIndex);
-        int snapshotId = mod.getSnapshotId();
-
-        appendOutput("\n=== Time-traveling to modification #" + selectedIndex + " ===\n");
-        appendOutput("Snapshot: " + snapshotId + "\n");
-
         try {
-            TimeTravelCommand cmd = new TimeTravelCommand(snapshotId);
-            callback.executeCommand(cmd);
+            TimeTravelCommand cmd = new TimeTravelCommand(mod.getSnapshotId());
+            if (callback != null) {
+                callback.executeCommand(cmd);
+            }
         } catch (Exception e) {
-            appendOutput("Error during time-travel: " + e.getMessage() + "\n");
         }
     }
 
-    /**
-     * Arrête le suivi de la variable actuelle
-     */
     private void clearVariableTracking() {
         trackedVariable = null;
         currentVariableLabel.setText("No variable tracked");
         variableHistoryModel.clear();
         currentVariableHistory.clear();
-        appendOutput("Variable tracking cleared\n");
     }
 
-    /**
-     * Recherche tous les appels de méthodes dans l'exécution
-     */
-    private void findAllMethodCalls() {
+    private void refreshMethodCallsDisplay() {
+        if (state == null || state.getTimelineManager() == null) return;
+
+        String searchLabel = currentSearchLabel.getText();
+        if (searchLabel.startsWith("Search: All method calls")) {
+            findAllMethodCallsInternal(false);
+        } else if (searchLabel.startsWith("Search: Calls to ")) {
+            String methodName = searchLabel.substring("Search: Calls to ".length());
+            methodName = methodName.replace("()", "").trim();
+            findCallsToMethodByNameInternal(methodName, false);
+        }
+    }
+
+    private void findAllMethodCallsInternal(boolean showMessage) {
         if (state == null || state.getTimelineManager() == null) return;
 
         methodCallsModel.clear();
         currentMethodCalls.clear();
         currentSearchLabel.setText("Search: All method calls");
 
-        appendOutput("\n=== Searching all method calls ===\n");
-
-        // Utiliser les données collectées automatiquement par le TimelineManager
         List<TimelineManager.MethodCallRecord> calls =
-                state.getTimelineManager().getAllMethodCalls();
+                state.getTimelineManager().getAllMethodCallsUpToCurrent();
 
-        // Convertir en MethodCallInfo pour l'affichage
         for (TimelineManager.MethodCallRecord call : calls) {
-            MethodCallInfo info = new MethodCallInfo(
-                    call.getSnapshotId(),
-                    call.getMethodName(),
-                    call.getLineNumber(),
-                    call.getSourceFile()
-            );
-            currentMethodCalls.add(info);
+            currentMethodCalls.add(new MethodCallInfo(
+                    call.getSnapshotId(), call.getMethodName(),
+                    call.getLineNumber(), call.getSourceFile()));
         }
 
-        // Afficher les résultats
         for (int i = 0; i < currentMethodCalls.size(); i++) {
             MethodCallInfo info = currentMethodCalls.get(i);
-            String display = String.format("[%d] %s() at %s:%d",
-                    i,
-                    info.methodName,
-                    info.sourceFile,
-                    info.lineNumber);
-            methodCallsModel.addElement(display);
+            methodCallsModel.addElement(String.format("[%d] %s() at %s:%d",
+                    i, info.methodName, info.sourceFile, info.lineNumber));
         }
-
-        appendOutput("Found " + currentMethodCalls.size() + " method calls\n");
     }
 
-    /**
-     * Recherche les appels à la méthode sélectionnée dans la call stack
-     */
+    private void findAllMethodCalls() {
+        findAllMethodCallsInternal(true);
+    }
+
     private void findCallsToSelectedMethod() {
         int selectedIndex = callStackList.getSelectedIndex();
         if (selectedIndex < 0 || state == null || state.getContext() == null) return;
 
         try {
             DebugFrame frame = state.getContext().getCallStack().getFrames().get(selectedIndex);
-            String methodName = frame.getLocation().method().name();
-
-            findCallsToMethodByName(methodName);
-
+            findCallsToMethodByName(frame.getLocation().method().name());
         } catch (Exception e) {
-            appendOutput("Error finding calls: " + e.getMessage() + "\n");
         }
     }
 
-    /**
-     * Demande le nom d'une méthode et recherche ses appels
-     */
     private void findCallsToMethod() {
-        String methodName = JOptionPane.showInputDialog(
-                this,
-                "Enter method name to search:",
-                "Find Method Calls",
-                JOptionPane.QUESTION_MESSAGE
-        );
+        String methodName = JOptionPane.showInputDialog(this,
+                "Enter method name to search:", "Find Method Calls",
+                JOptionPane.QUESTION_MESSAGE);
 
         if (methodName != null && !methodName.trim().isEmpty()) {
             findCallsToMethodByName(methodName.trim());
         }
     }
 
-    /**
-     * Recherche tous les appels à une méthode spécifique
-     */
     private void findCallsToMethodByName(String methodName) {
+        findCallsToMethodByNameInternal(methodName, true);
+    }
+
+    private void findCallsToMethodByNameInternal(String methodName, boolean showMessage) {
         if (state == null || state.getTimelineManager() == null) return;
 
         methodCallsModel.clear();
         currentMethodCalls.clear();
         currentSearchLabel.setText("Search: Calls to " + methodName + "()");
 
-        appendOutput("\n=== Searching calls to " + methodName + "() ===\n");
-
-        // Utiliser les données collectées automatiquement par le TimelineManager
         List<TimelineManager.MethodCallRecord> calls =
-                state.getTimelineManager().getCallsToMethod(methodName);
+                state.getTimelineManager().getCallsToMethodUpToCurrent(methodName);
 
-        // Convertir en MethodCallInfo pour l'affichage
         for (TimelineManager.MethodCallRecord call : calls) {
-            MethodCallInfo info = new MethodCallInfo(
-                    call.getSnapshotId(),
-                    call.getMethodName(),
-                    call.getLineNumber(),
-                    call.getSourceFile()
-            );
-            currentMethodCalls.add(info);
+            currentMethodCalls.add(new MethodCallInfo(
+                    call.getSnapshotId(), call.getMethodName(),
+                    call.getLineNumber(), call.getSourceFile()));
         }
 
-        // Afficher les résultats
         for (int i = 0; i < currentMethodCalls.size(); i++) {
             MethodCallInfo info = currentMethodCalls.get(i);
-            String display = String.format("[%d] %s() at %s:%d",
-                    i,
-                    info.methodName,
-                    info.sourceFile,
-                    info.lineNumber);
-            methodCallsModel.addElement(display);
+            methodCallsModel.addElement(String.format("[%d] %s() at %s:%d",
+                    i, info.methodName, info.sourceFile, info.lineNumber));
         }
-
-        appendOutput("Found " + currentMethodCalls.size() + " calls to " + methodName + "()\n");
     }
 
-    /**
-     * Voyage dans le temps vers l'appel de méthode sélectionné
-     */
     private void timeTravelToSelectedMethodCall() {
         int selectedIndex = methodCallsList.getSelectedIndex();
         if (selectedIndex < 0 || selectedIndex >= currentMethodCalls.size()) return;
 
-        MethodCallInfo info = currentMethodCalls.get(selectedIndex);
-        int snapshotId = info.snapshotId;
-
-        appendOutput("\n=== Time-traveling to method call #" + selectedIndex + " ===\n");
-        appendOutput("Snapshot: " + snapshotId + "\n");
-
         try {
-            TimeTravelCommand cmd = new TimeTravelCommand(snapshotId);
-            callback.executeCommand(cmd);
+            TimeTravelCommand cmd = new TimeTravelCommand(currentMethodCalls.get(selectedIndex).snapshotId);
+            if (callback != null) {
+                callback.executeCommand(cmd);
+            }
         } catch (Exception e) {
-            appendOutput("Error during time-travel: " + e.getMessage() + "\n");
         }
     }
 
-    /**
-     * Efface les résultats de recherche d'appels
-     */
     private void clearMethodCallsSearch() {
         methodCallsModel.clear();
         currentMethodCalls.clear();
         currentSearchLabel.setText("No search performed");
-        appendOutput("Method calls search cleared\n");
     }
 
-    // ========== UTILITAIRES ==========
+    private void showAllTrackedVariables() {
+        if (state == null) return;
 
-    /**
-     * Extrait le nom de variable d'un nœud de l'arbre inspector
-     */
+        variableHistoryModel.clear();
+        currentVariableHistory.clear();
+        trackedVariable = null;
+        currentVariableLabel.setText("All Variables with Modifications");
+
+        Map<String, List<VariableModification>> allVars =
+                state.getTimelineManager().getAllVariablesWithHistoryUpToCurrent();
+
+        if (allVars.isEmpty()) {
+            variableHistoryModel.addElement("(No variable modifications found yet)");
+            return;
+        }
+
+        for (Map.Entry<String, List<VariableModification>> entry : allVars.entrySet()) {
+            variableHistoryModel.addElement("━━━ " + entry.getKey() + " (" + entry.getValue().size() + " modifications) ━━━");
+            for (int i = 0; i < entry.getValue().size(); i++) {
+                VariableModification mod = entry.getValue().get(i);
+                variableHistoryModel.addElement(String.format("  [%d] %s → %s (line %d, %s)",
+                        i, mod.getOldValue(), mod.getNewValue(),
+                        mod.getLineNumber(), mod.getMethodName()));
+            }
+            variableHistoryModel.addElement("");
+            currentVariableHistory.addAll(entry.getValue());
+        }
+    }
+
     private String extractVariableName(String nodeText) {
         if (nodeText.contains(" = ")) {
             return nodeText.substring(0, nodeText.indexOf(" = ")).trim();
@@ -730,9 +567,6 @@ public class DebuggerGUI extends JFrame {
         return nodeText.trim();
     }
 
-    /**
-     * Classe interne pour stocker les informations d'un appel de méthode
-     */
     private static class MethodCallInfo {
         int snapshotId;
         String methodName;
@@ -747,8 +581,7 @@ public class DebuggerGUI extends JFrame {
         }
     }
 
-    // ========== MISE À JOUR DE L'INTERFACE ==========
-
+    // Met à jour l'état complet de l'interface (code, pile, inspecteur) à partir du nouvel état du débogueur
     public void updateDebuggerState(DebuggerState state, Location location, ThreadReference thread) {
         this.state = state;
         this.currentThread = thread;
@@ -757,54 +590,35 @@ public class DebuggerGUI extends JFrame {
             try {
                 currentSourceFile = location.sourceName();
                 currentLine = location.lineNumber();
-
                 loadSourceCode(location);
                 updateCallStack();
                 updateInspector();
-
-                // Mettre à jour l'historique de la variable si on en suit une
                 if (trackedVariable != null) {
                     updateVariableHistory();
                 }
-
             } catch (AbsentInformationException e) {
-                appendOutput("Warning: No debug information available\n");
             }
         }
     }
 
+    // Charge le contenu du fichier source et surligne la ligne actuelle
     private void loadSourceCode(Location location) {
         try {
-            String className = location.declaringType().name();
-            String fileName = location.sourceName();
-
-            String sourcePath = findSourceFile(className, fileName);
+            String sourcePath = findSourceFile(location.declaringType().name(), location.sourceName());
 
             if (sourcePath != null) {
                 List<String> lines = Files.readAllLines(Paths.get(sourcePath));
                 sourceLines.clear();
-
                 for (int i = 0; i < lines.size(); i++) {
                     sourceLines.put(i + 1, lines.get(i));
                 }
-
                 sourceCodePanel.setSourceLines(lines);
                 sourceCodePanel.setCurrentLine(currentLine);
             } else {
-                List<String> errorLines = Arrays.asList(
-                        "// Source code not available",
-                        "// Method: " + location.method().name(),
-                        "// Line: " + currentLine
-                );
-                sourceCodePanel.setSourceLines(errorLines);
+                sourceCodePanel.setSourceLines(Arrays.asList("// Source code not available"));
             }
-
         } catch (Exception e) {
-            List<String> errorLines = Arrays.asList(
-                    "// Error loading source code",
-                    "// " + e.getMessage()
-            );
-            sourceCodePanel.setSourceLines(errorLines);
+            sourceCodePanel.setSourceLines(Arrays.asList("// Error loading source code"));
         }
     }
 
@@ -821,13 +635,12 @@ public class DebuggerGUI extends JFrame {
                 return path;
             }
         }
-
         return null;
     }
 
+    // Rafraîchit la liste de la Call Stack
     private void updateCallStack() {
         callStackModel.clear();
-
         if (state == null || state.getContext() == null) {
             return;
         }
@@ -836,10 +649,8 @@ public class DebuggerGUI extends JFrame {
         if (stack != null) {
             List<DebugFrame> frames = stack.getFrames();
             for (int i = 0; i < frames.size(); i++) {
-                DebugFrame frame = frames.get(i);
-                callStackModel.addElement(String.format("[%d] %s", i, frame.toString()));
+                callStackModel.addElement(String.format("[%d] %s", i, frames.get(i).toString()));
             }
-
             if (!frames.isEmpty()) {
                 callStackList.setSelectedIndex(0);
             }
@@ -850,6 +661,7 @@ public class DebuggerGUI extends JFrame {
         updateInspectorForFrame(0);
     }
 
+    // Met à jour l'arbre des variables pour une frame spécifique de la pile
     private void updateInspectorForFrame(int frameIndex) {
         inspectorRoot.removeAllChildren();
 
@@ -879,45 +691,37 @@ public class DebuggerGUI extends JFrame {
     }
 
     private DefaultMutableTreeNode createVariableNode(String name, Value value, int depth) {
-        String display = name + " = " + formatValueShort(value);
-        DefaultMutableTreeNode node = new DefaultMutableTreeNode(display);
+        DefaultMutableTreeNode node = new DefaultMutableTreeNode(name + " = " + formatValueShort(value));
 
         if (depth > 5) {
-            node.add(new DefaultMutableTreeNode("... (depth limit reached)"));
+            node.add(new DefaultMutableTreeNode("..."));
             return node;
         }
 
         if (value instanceof ObjectReference && !(value instanceof StringReference)) {
             ObjectReference obj = (ObjectReference) value;
-
             try {
                 if (value instanceof ArrayReference) {
                     ArrayReference array = (ArrayReference) value;
-                    int length = array.length();
-
-                    for (int i = 0; i < Math.min(length, 50); i++) {
+                    for (int i = 0; i < Math.min(array.length(), 50); i++) {
                         node.add(createVariableNode("[" + i + "]", array.getValue(i), depth + 1));
                     }
-
-                    if (length > 50) {
-                        node.add(new DefaultMutableTreeNode("... (" + (length - 50) + " more elements)"));
+                    if (array.length() > 50) {
+                        node.add(new DefaultMutableTreeNode("..."));
                     }
                 } else {
-                    ReferenceType type = obj.referenceType();
-                    for (Field field : type.allFields()) {
+                    for (Field field : obj.referenceType().allFields()) {
                         try {
-                            Value fieldValue = obj.getValue(field);
-                            node.add(createVariableNode(field.name(), fieldValue, depth + 1));
+                            node.add(createVariableNode(field.name(), obj.getValue(field), depth + 1));
                         } catch (Exception e) {
                             node.add(new DefaultMutableTreeNode(field.name() + " = <inaccessible>"));
                         }
                     }
                 }
             } catch (ObjectCollectedException e) {
-                node.add(new DefaultMutableTreeNode("<collected by GC>"));
+                node.add(new DefaultMutableTreeNode("<collected>"));
             }
         }
-
         return node;
     }
 
@@ -943,12 +747,9 @@ public class DebuggerGUI extends JFrame {
 
     private void expandNode(JTree tree, DefaultMutableTreeNode node, int levelsRemaining) {
         if (levelsRemaining <= 0) return;
-
         tree.expandPath(new TreePath(node.getPath()));
-
         for (int i = 0; i < node.getChildCount(); i++) {
-            DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
-            expandNode(tree, child, levelsRemaining - 1);
+            expandNode(tree, (DefaultMutableTreeNode) node.getChildAt(i), levelsRemaining - 1);
         }
     }
 
@@ -963,18 +764,16 @@ public class DebuggerGUI extends JFrame {
         this.callback = callback;
     }
 
+    public void setDebuggerState(DebuggerState state) {
+        this.state = state;
+    }
+
     public void enableControls(boolean enabled) {
         stepIntoButton.setEnabled(enabled);
         stepOverButton.setEnabled(enabled);
         continueButton.setEnabled(enabled);
     }
 
-    // ========== NOUVELLES MÉTHODES POUR MODE REPLAY ==========
-
-    /**
-     * Ajoute du texte dans l'onglet "Program Output" SEULEMENT
-     * Utilisé pour System.out.println du programme debuggé
-     */
     public void appendProgramOutput(String text) {
         SwingUtilities.invokeLater(() -> {
             programOutputArea.append(text);
@@ -982,41 +781,32 @@ public class DebuggerGUI extends JFrame {
         });
     }
 
-    /**
-     * Met à jour l'UI à partir d'un snapshot (mode replay)
-     * Utilisé quand la VM est déconnectée et qu'on ne peut plus utiliser ThreadReference
-     */
+    // Met à jour l'interface pour afficher l'état d'un snapshot passé (Time Travel)
     public void updateFromSnapshot(ExecutionSnapshot snapshot) {
         if (snapshot == null) return;
 
         try {
-            // 1. Mettre à jour le source code
             currentSourceFile = snapshot.getSourceFile();
             currentLine = snapshot.getLineNumber();
             loadSourceCodeFromFile(currentSourceFile);
             sourceCodePanel.setCurrentLine(currentLine);
-
-            // 2. Mettre à jour la call stack depuis le snapshot
             updateCallStackFromSnapshot(snapshot);
-
-            // 3. Mettre à jour l'inspector depuis le snapshot
             updateInspectorFromSnapshot(snapshot);
-
-            // 4. Mettre à jour le program output pour ce snapshot
             updateProgramOutputFromSnapshot(snapshot);
 
+            if (trackedVariable != null) {
+                updateVariableHistory();
+            }
+
+            if (!currentMethodCalls.isEmpty()) {
+                refreshMethodCallsDisplay();
+            }
         } catch (Exception e) {
-            appendOutput("Error in updateFromSnapshot: " + e.getMessage() + "\n");
-            e.printStackTrace();
         }
     }
 
-    /**
-     * Charge le code source à partir du nom de fichier
-     */
     private void loadSourceCodeFromFile(String fileName) {
         try {
-            // Chercher le fichier dans plusieurs emplacements possibles
             String[] possiblePaths = {
                     "src/dbg/sourceBase/" + fileName,
                     "src/" + fileName,
@@ -1036,64 +826,35 @@ public class DebuggerGUI extends JFrame {
                     return;
                 }
             }
-
-            // Si aucun fichier trouvé
-            List<String> errorLines = Arrays.asList(
-                    "// Source code not available: " + fileName,
-                    "// Current line: " + currentLine,
-                    "",
-                    "// Please ensure source files are in one of:",
-                    "//   - src/dbg/sourceBase/",
-                    "//   - src/",
-                    "//   - Current directory"
-            );
-            sourceCodePanel.setSourceLines(errorLines);
-
+            sourceCodePanel.setSourceLines(Arrays.asList("// Source code not available"));
         } catch (Exception e) {
-            List<String> errorLines = Arrays.asList(
-                    "// Error loading source code: " + fileName,
-                    "// " + e.getMessage()
-            );
-            sourceCodePanel.setSourceLines(errorLines);
+            sourceCodePanel.setSourceLines(Arrays.asList("// Error loading source"));
         }
     }
 
-    /**
-     * Met à jour la call stack depuis le snapshot
-     */
     private void updateCallStackFromSnapshot(ExecutionSnapshot snapshot) {
         callStackModel.clear();
-
         if (snapshot.getCallStack() != null) {
-            List<String> stack = snapshot.getCallStack();
-            for (int i = 0; i < stack.size(); i++) {
-                callStackModel.addElement("[" + i + "] " + stack.get(i));
+            for (int i = 0; i < snapshot.getCallStack().size(); i++) {
+                callStackModel.addElement("[" + i + "] " + snapshot.getCallStack().get(i));
             }
-
-            if (!stack.isEmpty()) {
+            if (!snapshot.getCallStack().isEmpty()) {
                 callStackList.setSelectedIndex(0);
             }
         }
     }
 
-    /**
-     * Met à jour l'inspector depuis le snapshot
-     */
     private void updateInspectorFromSnapshot(ExecutionSnapshot snapshot) {
         inspectorRoot.removeAllChildren();
 
         if (snapshot.getVariables() != null && !snapshot.getVariables().isEmpty()) {
             DefaultMutableTreeNode localsNode = new DefaultMutableTreeNode("Local Variables");
-
-            // Trier les variables par nom pour un affichage cohérent
             List<Map.Entry<String, String>> sortedVars = new ArrayList<>(snapshot.getVariables().entrySet());
             sortedVars.sort(Map.Entry.comparingByKey());
 
             for (Map.Entry<String, String> entry : sortedVars) {
-                String varDisplay = entry.getKey() + " = " + entry.getValue();
-                localsNode.add(new DefaultMutableTreeNode(varDisplay));
+                localsNode.add(new DefaultMutableTreeNode(entry.getKey() + " = " + entry.getValue()));
             }
-
             inspectorRoot.add(localsNode);
         }
 
@@ -1101,61 +862,9 @@ public class DebuggerGUI extends JFrame {
         expandTree(inspectorTree, 2);
     }
 
-    /**
-     * Affiche la sortie du programme jusqu'à ce snapshot
-     */
     private void updateProgramOutputFromSnapshot(ExecutionSnapshot snapshot) {
         programOutputArea.setText("");
         programOutputArea.append(snapshot.getProgramOutputSoFar());
         programOutputArea.setCaretPosition(programOutputArea.getDocument().getLength());
-    }
-
-    /**
-     * Affiche toutes les variables trackées avec leurs modifications
-     */
-    private void showAllTrackedVariables() {
-        if (state == null) return;
-
-        variableHistoryModel.clear();
-        currentVariableHistory.clear();
-        trackedVariable = null;
-        currentVariableLabel.setText("All Variables with Modifications");
-
-        Map<String, List<VariableModification>> allVars =
-                state.getTimelineManager().getAllVariablesWithHistory();
-
-        if (allVars.isEmpty()) {
-            variableHistoryModel.addElement("(No variable modifications found)");
-            appendOutput("No variable modifications found\n");
-            return;
-        }
-
-        // Afficher toutes les variables avec leurs modifications
-        int totalMods = 0;
-        for (Map.Entry<String, List<VariableModification>> entry : allVars.entrySet()) {
-            String varName = entry.getKey();
-            List<VariableModification> mods = entry.getValue();
-
-            // En-tête de variable
-            variableHistoryModel.addElement("━━━ " + varName + " (" + mods.size() + " modifications) ━━━");
-
-            // Ajouter les modifications
-            for (int i = 0; i < mods.size(); i++) {
-                VariableModification mod = mods.get(i);
-                String display = String.format("  [%d] %s → %s (line %d, %s)",
-                        i,
-                        mod.getOldValue(),
-                        mod.getNewValue(),
-                        mod.getLineNumber(),
-                        mod.getMethodName());
-                variableHistoryModel.addElement(display);
-            }
-
-            variableHistoryModel.addElement("");
-            currentVariableHistory.addAll(mods);
-            totalMods += mods.size();
-        }
-
-        appendOutput("Showing " + allVars.size() + " variables with " + totalMods + " total modifications\n");
     }
 }

@@ -24,14 +24,14 @@ public class FollowVariableCommand implements Command {
         }
 
         // Obtenir la valeur actuelle de la variable
-        String currentValue = getVariableCurrentValue(state, variableName);
+        String currentValue = "x";//getVariableCurrentValue(state, variableName);
 
         if (currentValue == null) {
             return CommandResult.error("Variable '" + variableName + "' not found");
         }
 
-        // Commencer à suivre la variable
-        timeline.startTrackingVariable(variableName, currentValue);
+
+
 
         return CommandResult.success("Now tracking variable: " + variableName);
     }

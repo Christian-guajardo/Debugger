@@ -44,15 +44,6 @@ public class ScriptableDebugger {
                 System.out.println("Restoring to: " + snapshot);
 
 
-                if (isVmRunning) {
-                    try {
-                        state.updateContext(snapshot.getThread());
-                    } catch (Exception e) {
-
-                    }
-                } else {
-
-                }
             });
 
             enableClassPrepareRequest(vm);

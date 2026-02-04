@@ -6,6 +6,7 @@ import java.util.List;
 
 /**
  * Commande pour afficher l'historique d'une variable suivie
+ * CORRIGÉ : Utilise l'historique filtré jusqu'au snapshot actuel
  * Usage: show-history x
  */
 public class ShowVariableHistoryCommand implements Command {
@@ -23,7 +24,8 @@ public class ShowVariableHistoryCommand implements Command {
             return CommandResult.error("Timeline not available");
         }
 
-        List<VariableModification> history = timeline.getVariableHistory(variableName);
+        // CORRECTION : Utiliser l'historique filtré jusqu'au snapshot actuel
+        List<VariableModification> history = timeline.getVariableHistoryUpToCurrent(variableName);
 
         if (history.isEmpty()) {
             return CommandResult.success("No modifications found for variable: " + variableName);

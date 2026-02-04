@@ -4,10 +4,7 @@ import com.sun.jdi.*;
 import models.*;
 import java.util.*;
 
-/**
- * Snapshot d'exécution amélioré
- * Capture maintenant la sortie du programme jusqu'à ce point
- */
+
 public class ExecutionSnapshot {
     private final int snapshotId;
     private final long timestamp;
@@ -15,15 +12,9 @@ public class ExecutionSnapshot {
     private final int lineNumber;
     private final String sourceFile;
     private final String methodName;
-
-    // État de l'exécution
     private final Map<String, String> variables;
     private final List<String> callStack;
-
-    // Thread (pour compatibilité, mais pas utilisé en replay)
     private final ThreadReference thread;
-
-    // NOUVEAU : Sortie du programme jusqu'à ce snapshot
     private final String programOutputSoFar;
 
     public ExecutionSnapshot(int id, Location loc, ThreadReference thread, String programOutput)
@@ -36,12 +27,8 @@ public class ExecutionSnapshot {
         this.methodName = loc.method().name();
         this.thread = thread;
         this.programOutputSoFar = programOutput != null ? programOutput : "";
-
-        // Capturer les variables
         this.variables = new HashMap<>();
         captureVariables(thread);
-
-        // Capturer la call stack
         this.callStack = new ArrayList<>();
         captureCallStack(thread);
     }
@@ -55,7 +42,7 @@ public class ExecutionSnapshot {
                 variables.put(var.name(), value != null ? value.toString() : "null");
             }
         } catch (AbsentInformationException e) {
-            // Pas d'info de debug disponible
+
         }
     }
 
@@ -73,7 +60,7 @@ public class ExecutionSnapshot {
         }
     }
 
-    // Getters
+
     public int getSnapshotId() { return snapshotId; }
     public long getTimestamp() { return timestamp; }
     public Location getLocation() { return location; }

@@ -5,10 +5,7 @@ import commands.CommandResult;
 import models.Breakpoint;
 import java.util.List;
 
-/**
- * Stratégie d'exécution en mode Replay
- * Version corrigée avec step-over intelligent
- */
+
 public class ReplayExecutionStrategy implements ExecutionStrategy {
 
     @Override
