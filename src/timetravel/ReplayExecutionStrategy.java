@@ -4,19 +4,24 @@ import commands.DebuggerState;
 import commands.CommandResult;
 import models.Breakpoint;
 import java.util.List;
-import java.util.Map;
 
+/**
+ * Stratégie d'exécution en mode Replay
+ * Version corrigée avec step-over intelligent
+ */
 public class ReplayExecutionStrategy implements ExecutionStrategy {
 
     @Override
     public CommandResult step(DebuggerState state) {
         TimelineManager tm = state.getTimelineManager();
         int nextIndex = tm.getCurrentSnapshotIndex() + 1;
-        if (tm.travelToSnapshot(nextIndex)) {
 
-            return CommandResult.success("Replay: Stepped to snapshot");
+        if (nextIndex < tm.getTimelineSize()) {
+            tm.travelToSnapshot(tm.getTimeline().get(nextIndex).getSnapshotId());
+            return CommandResult.success("Stepped to next snapshot");
         }
-        return CommandResult.error("Replay: End of timeline reached.");
+
+        return CommandResult.error("End of timeline reached");
     }
 
     @Override
@@ -44,46 +49,56 @@ public class ReplayExecutionStrategy implements ExecutionStrategy {
         List<ExecutionSnapshot> timeline = tm.getTimeline();
         int currentIndex = tm.getCurrentSnapshotIndex();
 
-
+        // Chercher le prochain breakpoint
         for (int i = currentIndex + 1; i < timeline.size(); i++) {
             ExecutionSnapshot snap = timeline.get(i);
             if (isBreakpointHit(state, snap)) {
                 tm.travelToSnapshot(snap.getSnapshotId());
-                return CommandResult.success("Replay: Breakpoint hit at " +
+                return CommandResult.success("Breakpoint hit at " +
                         snap.getSourceFile() + ":" + snap.getLineNumber());
             }
         }
 
-        int lastIndex = tm.getTimelineSize() - 1;
-        if (lastIndex >= 0) {
-            ExecutionSnapshot last = timeline.get(lastIndex);
+        // Si pas de breakpoint, aller à la fin
+        if (timeline.size() > 0) {
+            ExecutionSnapshot last = timeline.get(timeline.size() - 1);
             tm.travelToSnapshot(last.getSnapshotId());
-            return CommandResult.success("Replay: Jumped to end of execution.");
+            return CommandResult.success("Reached end of execution");
         }
 
-        return CommandResult.error("Timeline empty.");
+        return CommandResult.error("Timeline empty");
     }
 
     @Override
     public CommandResult setBreakpoint(DebuggerState state, String fileName, int lineNumber) {
         String key = fileName + ":" + lineNumber;
-
         Breakpoint bp = new Breakpoint(fileName, lineNumber);
         state.getBreakpoints().put(key, bp);
-
-        return CommandResult.success("Replay Breakpoint set at " + key + " (Simulation)");
+        return CommandResult.success("Replay breakpoint set at " + key);
     }
 
     @Override
     public CommandResult printVariable(DebuggerState state, String varName) {
         ExecutionSnapshot snap = state.getTimelineManager().getCurrentSnapshot();
         if (snap != null && snap.getVariables().containsKey(varName)) {
-            return CommandResult.success(snap.getVariables().get(varName));
+            String value = snap.getVariables().get(varName);
+            return CommandResult.success(varName + " = " + value);
         }
-        return CommandResult.error("Variable inconnue dans ce snapshot.");
+        return CommandResult.error("Variable '" + varName + "' not found in current snapshot");
     }
 
+    /**
+     * Vérifie si deux snapshots sont au même endroit
+     */
+    private boolean isSameLocation(ExecutionSnapshot s1, ExecutionSnapshot s2) {
+        return s1.getSourceFile().equals(s2.getSourceFile()) &&
+                s1.getLineNumber() == s2.getLineNumber() &&
+                s1.getMethodName().equals(s2.getMethodName());
+    }
 
+    /**
+     * Vérifie si un breakpoint est placé sur ce snapshot
+     */
     private boolean isBreakpointHit(DebuggerState state, ExecutionSnapshot snap) {
         String key = snap.getSourceFile() + ":" + snap.getLineNumber();
         return state.getBreakpoints().containsKey(key);

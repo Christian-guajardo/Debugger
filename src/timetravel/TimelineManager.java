@@ -3,17 +3,31 @@ package timetravel;
 import com.sun.jdi.*;
 import java.util.*;
 
-
+/**
+ * TimelineManager amélioré
+ * - Track AUTOMATIQUEMENT toutes les variables trouvées
+ * - Enregistre tous les appels de méthodes
+ * - Capture la sortie du programme
+ */
 public class TimelineManager {
     private List<ExecutionSnapshot> timeline;
     private int currentSnapshotIndex;
     private int nextSnapshotId;
 
+    // Tracking automatique de TOUTES les variables
+    private Map<String, VariableTracker> allVariableTrackers;
 
-    private Map<String, VariableTracker> trackedVariables;
+    // Enregistrement de tous les appels de méthodes
+    private List<MethodCallRecord> allMethodCalls;
 
+    // Capture de la sortie du programme
+    private StringBuilder programOutput;
 
     private TimeTravelCallback callback;
+
+    public void startTrackingVariable(String variableName, String currentValue) {
+        System.out.println("Starting tracking variable " + variableName);
+    }
 
     public interface TimeTravelCallback {
         void restoreSnapshot(ExecutionSnapshot snapshot);
@@ -23,23 +37,32 @@ public class TimelineManager {
         this.timeline = new ArrayList<>();
         this.currentSnapshotIndex = -1;
         this.nextSnapshotId = 0;
-        this.trackedVariables = new HashMap<>();
+        this.allVariableTrackers = new HashMap<>();
+        this.allMethodCalls = new ArrayList<>();
+        this.programOutput = new StringBuilder();
     }
 
-
+    /**
+     * Enregistre un snapshot avec tracking automatique
+     */
     public ExecutionSnapshot recordSnapshot(Location location, ThreadReference thread) {
         try {
+            // Créer le snapshot avec la sortie du programme actuelle
             ExecutionSnapshot snapshot = new ExecutionSnapshot(
                     nextSnapshotId++,
                     location,
-                    thread
+                    thread,
+                    programOutput.toString()
             );
 
             timeline.add(snapshot);
             currentSnapshotIndex = timeline.size() - 1;
 
+            // AUTOMATIQUE : Tracker toutes les variables trouvées
+            autoTrackVariables(snapshot);
 
-            checkTrackedVariables(snapshot);
+            // AUTOMATIQUE : Enregistrer l'appel de méthode
+            recordMethodCall(snapshot);
 
             return snapshot;
 
@@ -50,31 +73,100 @@ public class TimelineManager {
     }
 
     /**
-     * suivre une variable
+     * Ajoute du texte à la sortie du programme
      */
-    public void startTrackingVariable(String variableName, String currentValue) {
-        if (!trackedVariables.containsKey(variableName)) {
-            VariableTracker tracker = new VariableTracker(variableName, currentValue);
-            trackedVariables.put(variableName, tracker);
+    public void appendProgramOutput(String text) {
+        programOutput.append(text);
+    }
 
-            analyzeHistoryForVariable(tracker);
+    /**
+     * Track automatiquement toutes les variables du snapshot
+     */
+    private void autoTrackVariables(ExecutionSnapshot snapshot) {
+        Map<String, String> vars = snapshot.getVariables();
+
+        for (Map.Entry<String, String> entry : vars.entrySet()) {
+            String varName = entry.getKey();
+            String varValue = entry.getValue();
+
+            // Créer un tracker si c'est la première fois qu'on voit cette variable
+            if (!allVariableTrackers.containsKey(varName)) {
+                allVariableTrackers.put(varName, new VariableTracker(varName, varValue));
+                allVariableTrackers.get(varName).initializeVariable(snapshot);
+            }
+
+            // Vérifier si la variable a changé
+            allVariableTrackers.get(varName).checkForModification(varValue, snapshot);
         }
     }
 
     /**
-     * Arrête de suivre une variable
-     * Cette methode risque est inutile
+     * Enregistre un appel de méthode
      */
-    public void stopTrackingVariable(String variableName) {
-        trackedVariables.remove(variableName);
+    private void recordMethodCall(ExecutionSnapshot snapshot) {
+        MethodCallRecord call = new MethodCallRecord(
+                snapshot.getSnapshotId(),
+                snapshot.getMethodName(),
+                snapshot.getSourceFile(),
+                snapshot.getLineNumber()
+        );
+        allMethodCalls.add(call);
     }
 
     /**
-     * Récupère l'historique d'une variable
+     * Récupère l'historique complet d'une variable
      */
     public List<VariableModification> getVariableHistory(String variableName) {
-        VariableTracker tracker = trackedVariables.get(variableName);
+        VariableTracker tracker = allVariableTrackers.get(variableName);
         return tracker != null ? tracker.getModifications() : new ArrayList<>();
+    }
+
+    /**
+     * Récupère tous les noms de variables trackées
+     */
+    public Set<String> getAllTrackedVariableNames() {
+        return new HashSet<>(allVariableTrackers.keySet());
+    }
+
+    /**
+     * Récupère toutes les variables avec leurs modifications
+     */
+    public Map<String, List<VariableModification>> getAllVariablesWithHistory() {
+        Map<String, List<VariableModification>> result = new HashMap<>();
+
+        for (Map.Entry<String, VariableTracker> entry : allVariableTrackers.entrySet()) {
+            String varName = entry.getKey();
+            List<VariableModification> history = entry.getValue().getModifications();
+
+            // N'inclure que les variables qui ont été modifiées
+            if (!history.isEmpty()) {
+                result.put(varName, history);
+            }
+        }
+
+        return result;
+    }
+
+    /**
+     * Récupère tous les appels de méthodes
+     */
+    public List<MethodCallRecord> getAllMethodCalls() {
+        return new ArrayList<>(allMethodCalls);
+    }
+
+    /**
+     * Récupère les appels à une méthode spécifique
+     */
+    public List<MethodCallRecord> getCallsToMethod(String methodName) {
+        List<MethodCallRecord> result = new ArrayList<>();
+
+        for (MethodCallRecord call : allMethodCalls) {
+            if (call.getMethodName().equals(methodName)) {
+                result.add(call);
+            }
+        }
+
+        return result;
     }
 
     /**
@@ -96,51 +188,17 @@ public class TimelineManager {
         return false;
     }
 
-    /**
-     * Vérifie si les variables ont changé
-     */
-    private void checkTrackedVariables(ExecutionSnapshot snapshot) {
-        for (VariableTracker tracker : trackedVariables.values()) {
-            String varName = tracker.getVariableName();
-
-            if (snapshot.getVariables().containsKey(varName)) {
-                String newValue = snapshot.getVariables().get(varName);
-                tracker.checkForModification(newValue, snapshot);
-            }
-        }
-    }
-
-    /**
-     * Analyse rétroactivement la timeline pour une variable
-     */
-    private void analyzeHistoryForVariable(VariableTracker tracker) {
-        for (ExecutionSnapshot snapshot : timeline) {
-            String varName = tracker.getVariableName();
-
-            if (snapshot.getVariables().containsKey(varName)) {
-                String value = snapshot.getVariables().get(varName);
-                tracker.checkForModification(value, snapshot);
-            }
-        }
-    }
-
-
+    // Getters standards
     public List<ExecutionSnapshot> getTimeline() { return new ArrayList<>(timeline); }
     public int getCurrentSnapshotIndex() { return currentSnapshotIndex; }
     public ExecutionSnapshot getCurrentSnapshot() {
         return currentSnapshotIndex >= 0 ? timeline.get(currentSnapshotIndex) : null;
     }
-
-    public void setCallback(TimeTravelCallback callback) {
-        this.callback = callback;
-    }
-
-    public int getTimelineSize() {
-        return timeline.size();
-    }
+    public void setCallback(TimeTravelCallback callback) { this.callback = callback; }
+    public int getTimelineSize() { return timeline.size(); }
 
     /**
-     * Classe interne pour suivre une variable
+     * Classe interne pour tracker une variable
      */
     private class VariableTracker {
         private final String variableName;
@@ -151,6 +209,19 @@ public class TimelineManager {
             this.variableName = variableName;
             this.lastValue = initialValue;
             this.modifications = new ArrayList<>();
+        }
+
+        public void initializeVariable(ExecutionSnapshot snapshot){
+            VariableModification mod = new VariableModification(
+                    variableName,
+                    "_",
+                    lastValue,
+                    snapshot.getSnapshotId(),
+                    snapshot.getLineNumber(),
+                    snapshot.getMethodName()
+            );
+
+            modifications.add(mod);
         }
 
         public void checkForModification(String newValue, ExecutionSnapshot snapshot) {
@@ -169,9 +240,35 @@ public class TimelineManager {
             }
         }
 
-        public String getVariableName() { return variableName; }
         public List<VariableModification> getModifications() {
             return new ArrayList<>(modifications);
+        }
+    }
+
+    /**
+     * Classe pour enregistrer un appel de méthode
+     */
+    public static class MethodCallRecord {
+        private final int snapshotId;
+        private final String methodName;
+        private final String sourceFile;
+        private final int lineNumber;
+
+        public MethodCallRecord(int snapshotId, String methodName, String sourceFile, int lineNumber) {
+            this.snapshotId = snapshotId;
+            this.methodName = methodName;
+            this.sourceFile = sourceFile;
+            this.lineNumber = lineNumber;
+        }
+
+        public int getSnapshotId() { return snapshotId; }
+        public String getMethodName() { return methodName; }
+        public String getSourceFile() { return sourceFile; }
+        public int getLineNumber() { return lineNumber; }
+
+        @Override
+        public String toString() {
+            return String.format("%s() at %s:%d", methodName, sourceFile, lineNumber);
         }
     }
 }

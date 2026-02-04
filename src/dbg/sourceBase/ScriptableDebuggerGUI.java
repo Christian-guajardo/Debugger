@@ -14,8 +14,7 @@ import java.io.*;
 import java.util.*;
 
 /**
- * Debugger graphique basé sur les snapshots avec support des Time-Traveling Queries
- * Version corrigée pour gérer la disconnection de la VM en mode replay
+ * Version 3 : Capture la sortie du programme pour chaque snapshot
  */
 public class ScriptableDebuggerGUI {
     private Class debugClass;
@@ -42,19 +41,21 @@ public class ScriptableDebuggerGUI {
     public void attachTo(Class debuggeeClass) {
         this.debugClass = debuggeeClass;
 
-        // Créer l'interface graphique en premier
         SwingUtilities.invokeLater(() -> {
             gui = new DebuggerGUI();
             gui.setCallback(new DebuggerGUICallback());
             gui.setVisible(true);
             gui.appendOutput("=== Time-Traveling Debugger Started ===\n");
             gui.appendOutput("Starting target VM...\n");
-            gui.enableControls(false); // Désactivé pendant la capture
+            gui.enableControls(false);
         });
 
         try {
             vm = connectAndLaunchVM();
+
+            // Capturer la sortie du programme ET l'ajouter au TimelineManager
             captureProcessOutput();
+
             state = new DebuggerState(vm);
 
             // Configurer le callback de time-travel
@@ -66,7 +67,7 @@ public class ScriptableDebuggerGUI {
                             ":" + snapshot.getLineNumber() + "\n");
                     gui.appendOutput("Method: " + snapshot.getMethodName() + "\n");
 
-                    // Mettre à jour l'UI avec le snapshot (sans utiliser le thread)
+                    // Mettre à jour l'UI avec le snapshot
                     updateGUIFromSnapshot(snapshot);
                 });
             });
@@ -96,7 +97,6 @@ public class ScriptableDebuggerGUI {
     }
 
     public void startDebugger() throws InterruptedException, AbsentInformationException {
-        // --- PHASE 1 : ENREGISTREMENT (automatique) ---
         SwingUtilities.invokeLater(() -> {
             gui.appendOutput("\n=== Phase 1: Recording Execution ===\n");
             gui.appendOutput("Capturing all execution steps...\n");
@@ -104,15 +104,24 @@ public class ScriptableDebuggerGUI {
 
         recordTrace();
 
-        // --- PHASE 2 : MODE REPLAY ---
         SwingUtilities.invokeLater(() -> {
             gui.appendOutput("\n=== Phase 2: Replay Mode ===\n");
             gui.appendOutput("Program execution completed.\n");
             gui.appendOutput("Total snapshots captured: " +
                     state.getTimelineManager().getTimelineSize() + "\n");
+
+            // Afficher les statistiques de tracking
+            int varCount = state.getTimelineManager().getAllTrackedVariableNames().size();
+            int modifCount = state.getTimelineManager().getAllVariablesWithHistory().values()
+                    .stream().mapToInt(List::size).sum();
+            int methodCallCount = state.getTimelineManager().getAllMethodCalls().size();
+
+            gui.appendOutput("\nStatistics:\n");
+            gui.appendOutput("- Variables tracked: " + varCount + "\n");
+            gui.appendOutput("- Variable modifications: " + modifCount + "\n");
+            gui.appendOutput("- Method calls recorded: " + methodCallCount + "\n");
             gui.appendOutput("\nYou can now navigate through the execution.\n");
 
-            // Activer les contrôles et passer en mode replay
             gui.enableControls(true);
         });
 
@@ -176,7 +185,6 @@ public class ScriptableDebuggerGUI {
         StepRequest stepRequest = vm.eventRequestManager().createStepRequest(
                 thread, StepRequest.STEP_LINE, StepRequest.STEP_INTO);
 
-        // Exclure les packages Java système
         stepRequest.addClassExclusionFilter("java.*");
         stepRequest.addClassExclusionFilter("javax.*");
         stepRequest.addClassExclusionFilter("sun.*");
@@ -195,18 +203,11 @@ public class ScriptableDebuggerGUI {
         }
     }
 
-    /**
-     * Mise à jour de l'UI à partir d'un snapshot (mode replay)
-     * N'utilise PAS le ThreadReference car la VM est déconnectée
-     */
     private void updateGUIFromSnapshot(ExecutionSnapshot snapshot) {
         if (snapshot == null) return;
 
         try {
-            // En mode replay, on reconstruit le contexte à partir du snapshot
-            // sans utiliser le thread JDI (qui n'est plus disponible)
             gui.updateFromSnapshot(snapshot);
-
         } catch (Exception e) {
             SwingUtilities.invokeLater(() -> {
                 gui.appendOutput("Error updating GUI: " + e.getMessage() + "\n");
@@ -214,9 +215,14 @@ public class ScriptableDebuggerGUI {
         }
     }
 
+    /**
+     * Capture la sortie du programme et l'envoie à la fois vers l'UI
+     * ET vers le TimelineManager pour l'enregistrer dans les snapshots
+     */
     private void captureProcessOutput() {
         Process process = vm.process();
 
+        // Thread pour stdout
         new Thread(() -> {
             try (InputStreamReader isr = new InputStreamReader(process.getInputStream());
                  BufferedReader br = new BufferedReader(isr)) {
@@ -224,16 +230,21 @@ public class ScriptableDebuggerGUI {
                 String line;
                 while ((line = br.readLine()) != null) {
                     String finalLine = line;
+
+                    // Envoyer à l'UI
                     SwingUtilities.invokeLater(() -> {
                         gui.appendProgramOutput(finalLine + "\n");
                     });
+
+                    // Enregistrer dans le TimelineManager
+                    state.getTimelineManager().appendProgramOutput(finalLine + "\n");
                 }
             } catch (IOException e) {
-                // Stream fermé - normal à la fin
+                // Stream fermé
             }
         }).start();
 
-        // Capturer aussi stderr
+        // Thread pour stderr
         new Thread(() -> {
             try (InputStreamReader isr = new InputStreamReader(process.getErrorStream());
                  BufferedReader br = new BufferedReader(isr)) {
@@ -241,23 +252,23 @@ public class ScriptableDebuggerGUI {
                 String line;
                 while ((line = br.readLine()) != null) {
                     String finalLine = line;
+
                     SwingUtilities.invokeLater(() -> {
                         gui.appendProgramOutput("[ERROR] " + finalLine + "\n");
                     });
+
+                    state.getTimelineManager().appendProgramOutput("[ERROR] " + finalLine + "\n");
                 }
             } catch (IOException e) {
-                // Stream fermé - normal
+                // Stream fermé
             }
         }).start();
     }
 
-    /**
-     * Classe interne pour gérer les callbacks de l'interface graphique
-     */
     private class DebuggerGUICallback implements DebuggerGUI.DebuggerCallback {
 
         @Override
-        public void executeCommand(Command command) {
+        public CommandResult executeCommand(Command command) {
             try {
                 CommandResult result = command.execute(state);
 
@@ -265,16 +276,16 @@ public class ScriptableDebuggerGUI {
                     SwingUtilities.invokeLater(() -> {
                         gui.appendOutput("ERROR: " + result.getMessage() + "\n");
                     });
-                    return;
+                    return null;
                 }
 
-                // Mettre à jour l'UI après l'exécution de la commande
                 ExecutionSnapshot current = state.getTimelineManager().getCurrentSnapshot();
                 if (current != null) {
                     SwingUtilities.invokeLater(() -> {
                         updateGUIFromSnapshot(current);
                     });
                 }
+                return result;
 
             } catch (Exception e) {
                 SwingUtilities.invokeLater(() -> {
@@ -282,12 +293,13 @@ public class ScriptableDebuggerGUI {
                     e.printStackTrace();
                 });
             }
+
+            return null;
         }
 
         @Override
         public void placeBreakpoint(String file, int line) {
             try {
-                // En mode replay, les breakpoints sont simulés
                 BreakCommand cmd = new BreakCommand(file, line);
                 CommandResult result = cmd.execute(state);
 

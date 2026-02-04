@@ -4,7 +4,10 @@ import com.sun.jdi.*;
 import models.*;
 import java.util.*;
 
-//https://rmod-files.lille.inria.fr/Team/Texts/Papers/Will21a-QRS21-TimeTravelingQueries.pdf
+/**
+ * Snapshot d'exécution amélioré
+ * Capture maintenant la sortie du programme jusqu'à ce point
+ */
 public class ExecutionSnapshot {
     private final int snapshotId;
     private final long timestamp;
@@ -13,14 +16,17 @@ public class ExecutionSnapshot {
     private final String sourceFile;
     private final String methodName;
 
-
+    // État de l'exécution
     private final Map<String, String> variables;
     private final List<String> callStack;
 
-
+    // Thread (pour compatibilité, mais pas utilisé en replay)
     private final ThreadReference thread;
 
-    public ExecutionSnapshot(int id, Location loc, ThreadReference thread)
+    // NOUVEAU : Sortie du programme jusqu'à ce snapshot
+    private final String programOutputSoFar;
+
+    public ExecutionSnapshot(int id, Location loc, ThreadReference thread, String programOutput)
             throws IncompatibleThreadStateException, AbsentInformationException {
         this.snapshotId = id;
         this.timestamp = System.currentTimeMillis();
@@ -29,12 +35,13 @@ public class ExecutionSnapshot {
         this.sourceFile = loc.sourceName();
         this.methodName = loc.method().name();
         this.thread = thread;
+        this.programOutputSoFar = programOutput != null ? programOutput : "";
 
-
+        // Capturer les variables
         this.variables = new HashMap<>();
         captureVariables(thread);
 
-
+        // Capturer la call stack
         this.callStack = new ArrayList<>();
         captureCallStack(thread);
     }
@@ -48,7 +55,7 @@ public class ExecutionSnapshot {
                 variables.put(var.name(), value != null ? value.toString() : "null");
             }
         } catch (AbsentInformationException e) {
-
+            // Pas d'info de debug disponible
         }
     }
 
@@ -66,7 +73,7 @@ public class ExecutionSnapshot {
         }
     }
 
-
+    // Getters
     public int getSnapshotId() { return snapshotId; }
     public long getTimestamp() { return timestamp; }
     public Location getLocation() { return location; }
@@ -76,6 +83,7 @@ public class ExecutionSnapshot {
     public Map<String, String> getVariables() { return variables; }
     public List<String> getCallStack() { return callStack; }
     public ThreadReference getThread() { return thread; }
+    public String getProgramOutputSoFar() { return programOutputSoFar; }
 
     @Override
     public String toString() {

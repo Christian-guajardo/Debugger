@@ -120,8 +120,7 @@ public class SourceCodePanel extends JPanel {
                 }
             });
 
-            // Menu contextuel
-            setComponentPopupMenu(createPopupMenu());
+
         }
 
         private void handleClick(MouseEvent e) {
@@ -139,26 +138,7 @@ public class SourceCodePanel extends JPanel {
             }
         }
 
-        private JPopupMenu createPopupMenu() {
-            JPopupMenu menu = new JPopupMenu();
 
-            JMenuItem toggleBP = new JMenuItem("Toggle Breakpoint");
-            toggleBP.addActionListener(e -> {
-                Point mousePos = getMousePosition();
-                if (mousePos != null) {
-                    int line = (mousePos.y / LINE_HEIGHT) + 1;
-                    if (line > 0 && line <= sourceLines.size()) {
-                        toggleBreakpoint(line);
-                        if (breakpointListener != null) {
-                            breakpointListener.onBreakpointToggle(line);
-                        }
-                    }
-                }
-            });
-            menu.add(toggleBP);
-
-            return menu;
-        }
 
         public void updateSize() {
             int height = sourceLines.size() * LINE_HEIGHT + MARGIN * 2;

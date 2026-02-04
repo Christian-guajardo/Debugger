@@ -64,7 +64,8 @@ public class DebuggerGUI extends JFrame {
     private List<MethodCallInfo> currentMethodCalls = new ArrayList<>();
 
     public interface DebuggerCallback {
-        void executeCommand(Command command);
+        CommandResult executeCommand(Command command);
+
         void placeBreakpoint(String file, int line);
         void stop();
     }
@@ -302,15 +303,25 @@ public class DebuggerGUI extends JFrame {
 
         // En-tête avec info sur la variable suivie
         JPanel headerPanel = new JPanel(new BorderLayout());
-        currentVariableLabel = new JLabel("No variable tracked");
+        currentVariableLabel = new JLabel("No variable selected");
         currentVariableLabel.setFont(new Font("SansSerif", Font.BOLD, 12));
         currentVariableLabel.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
         headerPanel.add(currentVariableLabel, BorderLayout.CENTER);
 
+        // Panel avec boutons
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+
+        JButton showAllButton = new JButton("Show All");
+        showAllButton.setToolTipText("Show all tracked variables");
+        showAllButton.addActionListener(e -> showAllTrackedVariables());
+
         JButton clearButton = new JButton("Clear");
-        clearButton.setToolTipText("Stop tracking current variable");
+        clearButton.setToolTipText("Clear display");
         clearButton.addActionListener(e -> clearVariableTracking());
-        headerPanel.add(clearButton, BorderLayout.EAST);
+
+        buttonPanel.add(showAllButton);
+        buttonPanel.add(clearButton);
+        headerPanel.add(buttonPanel, BorderLayout.EAST);
 
         panel.add(headerPanel, BorderLayout.NORTH);
 
@@ -469,20 +480,17 @@ public class DebuggerGUI extends JFrame {
         }
 
         try {
-            // Exécuter la commande follow-var
-            FollowVariableCommand cmd = new FollowVariableCommand(varName);
-            CommandResult result = cmd.execute(state);
 
-            if (result.isSuccess()) {
+
+
                 trackedVariable = varName;
                 currentVariableLabel.setText("Tracking: " + varName);
                 appendOutput("Started tracking variable: " + varName + "\n");
 
                 // Afficher l'historique
                 updateVariableHistory();
-            } else {
-                appendOutput("Failed to track variable: " + result.getMessage() + "\n");
-            }
+
+
 
         } catch (Exception e) {
             appendOutput("Error tracking variable: " + e.getMessage() + "\n");
@@ -496,13 +504,16 @@ public class DebuggerGUI extends JFrame {
         variableHistoryModel.clear();
         currentVariableHistory.clear();
 
-        if (trackedVariable == null || state == null) return;
+        if (trackedVariable == null ) return;
 
         try {
-            ShowVariableHistoryCommand cmd = new ShowVariableHistoryCommand(trackedVariable);
-            CommandResult result = cmd.execute(state);
 
-            if (result.isSuccess() && result.getData() instanceof List) {
+
+            CommandResult result = null;
+            if (callback != null) {
+                result = callback.executeCommand(new ShowVariableHistoryCommand(trackedVariable));
+            }
+            if (result!=null&&result.isSuccess() && result.getData() instanceof List) {
                 @SuppressWarnings("unchecked")
                 List<VariableModification> history = (List<VariableModification>) result.getData();
                 currentVariableHistory = history;
@@ -572,15 +583,17 @@ public class DebuggerGUI extends JFrame {
 
         appendOutput("\n=== Searching all method calls ===\n");
 
-        List<ExecutionSnapshot> timeline = state.getTimelineManager().getTimeline();
+        // Utiliser les données collectées automatiquement par le TimelineManager
+        List<TimelineManager.MethodCallRecord> calls =
+                state.getTimelineManager().getAllMethodCalls();
 
-        for (ExecutionSnapshot snapshot : timeline) {
-            // Chaque snapshot représente un point d'exécution
+        // Convertir en MethodCallInfo pour l'affichage
+        for (TimelineManager.MethodCallRecord call : calls) {
             MethodCallInfo info = new MethodCallInfo(
-                    snapshot.getSnapshotId(),
-                    snapshot.getMethodName(),
-                    snapshot.getLineNumber(),
-                    snapshot.getSourceFile()
+                    call.getSnapshotId(),
+                    call.getMethodName(),
+                    call.getLineNumber(),
+                    call.getSourceFile()
             );
             currentMethodCalls.add(info);
         }
@@ -645,18 +658,19 @@ public class DebuggerGUI extends JFrame {
 
         appendOutput("\n=== Searching calls to " + methodName + "() ===\n");
 
-        List<ExecutionSnapshot> timeline = state.getTimelineManager().getTimeline();
+        // Utiliser les données collectées automatiquement par le TimelineManager
+        List<TimelineManager.MethodCallRecord> calls =
+                state.getTimelineManager().getCallsToMethod(methodName);
 
-        for (ExecutionSnapshot snapshot : timeline) {
-            if (snapshot.getMethodName().equals(methodName)) {
-                MethodCallInfo info = new MethodCallInfo(
-                        snapshot.getSnapshotId(),
-                        snapshot.getMethodName(),
-                        snapshot.getLineNumber(),
-                        snapshot.getSourceFile()
-                );
-                currentMethodCalls.add(info);
-            }
+        // Convertir en MethodCallInfo pour l'affichage
+        for (TimelineManager.MethodCallRecord call : calls) {
+            MethodCallInfo info = new MethodCallInfo(
+                    call.getSnapshotId(),
+                    call.getMethodName(),
+                    call.getLineNumber(),
+                    call.getSourceFile()
+            );
+            currentMethodCalls.add(info);
         }
 
         // Afficher les résultats
@@ -930,7 +944,7 @@ public class DebuggerGUI extends JFrame {
     private void expandNode(JTree tree, DefaultMutableTreeNode node, int levelsRemaining) {
         if (levelsRemaining <= 0) return;
 
-        tree.expandPath(new javax.swing.tree.TreePath(node.getPath()));
+        tree.expandPath(new TreePath(node.getPath()));
 
         for (int i = 0; i < node.getChildCount(); i++) {
             DefaultMutableTreeNode child = (DefaultMutableTreeNode) node.getChildAt(i);
@@ -987,6 +1001,9 @@ public class DebuggerGUI extends JFrame {
 
             // 3. Mettre à jour l'inspector depuis le snapshot
             updateInspectorFromSnapshot(snapshot);
+
+            // 4. Mettre à jour le program output pour ce snapshot
+            updateProgramOutputFromSnapshot(snapshot);
 
         } catch (Exception e) {
             appendOutput("Error in updateFromSnapshot: " + e.getMessage() + "\n");
@@ -1082,5 +1099,63 @@ public class DebuggerGUI extends JFrame {
 
         inspectorTreeModel.reload();
         expandTree(inspectorTree, 2);
+    }
+
+    /**
+     * Affiche la sortie du programme jusqu'à ce snapshot
+     */
+    private void updateProgramOutputFromSnapshot(ExecutionSnapshot snapshot) {
+        programOutputArea.setText("");
+        programOutputArea.append(snapshot.getProgramOutputSoFar());
+        programOutputArea.setCaretPosition(programOutputArea.getDocument().getLength());
+    }
+
+    /**
+     * Affiche toutes les variables trackées avec leurs modifications
+     */
+    private void showAllTrackedVariables() {
+        if (state == null) return;
+
+        variableHistoryModel.clear();
+        currentVariableHistory.clear();
+        trackedVariable = null;
+        currentVariableLabel.setText("All Variables with Modifications");
+
+        Map<String, List<VariableModification>> allVars =
+                state.getTimelineManager().getAllVariablesWithHistory();
+
+        if (allVars.isEmpty()) {
+            variableHistoryModel.addElement("(No variable modifications found)");
+            appendOutput("No variable modifications found\n");
+            return;
+        }
+
+        // Afficher toutes les variables avec leurs modifications
+        int totalMods = 0;
+        for (Map.Entry<String, List<VariableModification>> entry : allVars.entrySet()) {
+            String varName = entry.getKey();
+            List<VariableModification> mods = entry.getValue();
+
+            // En-tête de variable
+            variableHistoryModel.addElement("━━━ " + varName + " (" + mods.size() + " modifications) ━━━");
+
+            // Ajouter les modifications
+            for (int i = 0; i < mods.size(); i++) {
+                VariableModification mod = mods.get(i);
+                String display = String.format("  [%d] %s → %s (line %d, %s)",
+                        i,
+                        mod.getOldValue(),
+                        mod.getNewValue(),
+                        mod.getLineNumber(),
+                        mod.getMethodName());
+                variableHistoryModel.addElement(display);
+            }
+
+            variableHistoryModel.addElement("");
+            currentVariableHistory.addAll(mods);
+            totalMods += mods.size();
+        }
+
+        appendOutput("Showing " + allVars.size() + " variables with " + totalMods + " total modifications\n");
     }
 }
